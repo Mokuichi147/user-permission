@@ -8,7 +8,7 @@
 //!
 //! # async fn run() -> user_permission_core::Result<()> {
 //! let db = Database::open_local("app.db", Some("secret.key")).await?;
-//! let user = db.users().create("alice", "password123", "Alice").await?;
+//! let user = db.users().create("alice", "password123", "Alice", None).await?;
 //! let token = db
 //!     .users()
 //!     .authenticate("alice", "password123", Duration::from_secs(3600))

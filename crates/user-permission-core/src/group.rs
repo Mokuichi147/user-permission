@@ -52,9 +52,11 @@ impl GroupManager {
         name: &str,
         description: &str,
         is_admin: bool,
+        token: Option<&str>,
     ) -> Result<Group> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let row = sqlx::query(
                     "INSERT INTO groups (name, description, is_admin) VALUES (?, ?, ?) RETURNING *",
                 )
@@ -83,27 +85,40 @@ impl GroupManager {
                     "description": description,
                     "is_admin": is_admin,
                 });
-                relay.request_json("POST", "/groups", Some(body), true).await
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json("POST", "/groups", Some(body), bearer.as_deref())
+                    .await
             }
         }
     }
 
-    pub async fn get_by_id(&self, group_id: i64) -> Result<Option<Group>> {
+    pub async fn get_by_id(&self, group_id: i64, token: Option<&str>) -> Result<Option<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let row = sqlx::query("SELECT * FROM groups WHERE id = ?")
                     .bind(group_id)
                     .fetch_optional(&local.pool)
                     .await?;
                 row.as_ref().map(Group::from_row).transpose()
             }
-            Backend::Relay(relay) => relay
-                .request_json_opt("GET", &format!("/groups/{group_id}"), None, true)
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json_opt(
+                        "GET",
+                        &format!("/groups/{group_id}"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
         }
     }
 
-    pub async fn get_by_name(&self, name: &str) -> Result<Option<Group>> {
+    pub async fn get_by_name(&self, name: &str, token: Option<&str>) -> Result<Option<Group>> {
+        let _ = token;
         match &*self.backend {
             Backend::Local(local) => {
                 let row = sqlx::query("SELECT * FROM groups WHERE name = ?")
@@ -118,21 +133,26 @@ impl GroupManager {
         }
     }
 
-    pub async fn list_all(&self) -> Result<Vec<Group>> {
+    pub async fn list_all(&self, token: Option<&str>) -> Result<Vec<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let rows = sqlx::query("SELECT * FROM groups ORDER BY id")
                     .fetch_all(&local.pool)
                     .await?;
                 rows.iter().map(Group::from_row).collect()
             }
             Backend::Relay(relay) => {
-                relay.request_json("GET", "/groups", None, true).await
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json("GET", "/groups", None, bearer.as_deref())
+                    .await
             }
         }
     }
 
-    pub async fn list_admin_groups(&self) -> Result<Vec<Group>> {
+    pub async fn list_admin_groups(&self, token: Option<&str>) -> Result<Vec<Group>> {
+        let _ = token;
         let local = self.backend.as_local()?;
         let rows = sqlx::query("SELECT * FROM groups WHERE is_admin = 1 ORDER BY id")
             .fetch_all(&local.pool)
@@ -140,7 +160,12 @@ impl GroupManager {
         rows.iter().map(Group::from_row).collect()
     }
 
-    pub async fn update(&self, group_id: i64, update: GroupUpdate) -> Result<Option<Group>> {
+    pub async fn update(
+        &self,
+        group_id: i64,
+        update: GroupUpdate,
+        token: Option<&str>,
+    ) -> Result<Option<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
                 let mut fields: Vec<&str> = Vec::new();
@@ -158,7 +183,7 @@ impl GroupManager {
                     params.push(Value::Number((a as i64).into()));
                 }
                 if fields.is_empty() {
-                    return self.get_by_id(group_id).await;
+                    return self.get_by_id(group_id, token).await;
                 }
                 fields.push("updated_at = datetime('now')");
                 let sql = format!(
@@ -175,7 +200,7 @@ impl GroupManager {
                 }
                 q = q.bind(group_id);
                 q.execute(&local.pool).await?;
-                self.get_by_id(group_id).await
+                self.get_by_id(group_id, token).await
             }
             Backend::Relay(relay) => {
                 let mut body = Map::new();
@@ -188,36 +213,52 @@ impl GroupManager {
                 if let Some(a) = update.is_admin {
                     body.insert("is_admin".into(), Value::Bool(a));
                 }
+                let bearer = relay.resolve_auth(token);
                 relay
                     .request_json_opt(
                         "PATCH",
                         &format!("/groups/{group_id}"),
                         Some(Value::Object(body)),
-                        true,
+                        bearer.as_deref(),
                     )
                     .await
             }
         }
     }
 
-    pub async fn delete(&self, group_id: i64) -> Result<bool> {
+    pub async fn delete(&self, group_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let res = sqlx::query("DELETE FROM groups WHERE id = ?")
                     .bind(group_id)
                     .execute(&local.pool)
                     .await?;
                 Ok(res.rows_affected() > 0)
             }
-            Backend::Relay(relay) => relay
-                .request_no_content("DELETE", &format!("/groups/{group_id}"), None, true)
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_no_content(
+                        "DELETE",
+                        &format!("/groups/{group_id}"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
         }
     }
 
-    pub async fn add_user(&self, group_id: i64, user_id: i64) -> Result<bool> {
+    pub async fn add_user(
+        &self,
+        group_id: i64,
+        user_id: i64,
+        token: Option<&str>,
+    ) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let res = sqlx::query(
                     "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
                 )
@@ -229,12 +270,13 @@ impl GroupManager {
             }
             Backend::Relay(relay) => {
                 let body = serde_json::json!({"group_id": group_id, "user_id": user_id});
+                let bearer = relay.resolve_auth(token);
                 relay
                     .request_no_content_strict(
                         "POST",
                         &format!("/groups/{group_id}/members"),
                         Some(body),
-                        true,
+                        bearer.as_deref(),
                         201,
                     )
                     .await
@@ -242,9 +284,15 @@ impl GroupManager {
         }
     }
 
-    pub async fn remove_user(&self, group_id: i64, user_id: i64) -> Result<bool> {
+    pub async fn remove_user(
+        &self,
+        group_id: i64,
+        user_id: i64,
+        token: Option<&str>,
+    ) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let res = sqlx::query(
                     "DELETE FROM user_groups WHERE user_id = ? AND group_id = ?",
                 )
@@ -254,20 +302,24 @@ impl GroupManager {
                 .await?;
                 Ok(res.rows_affected() > 0)
             }
-            Backend::Relay(relay) => relay
-                .request_no_content(
-                    "DELETE",
-                    &format!("/groups/{group_id}/members/{user_id}"),
-                    None,
-                    true,
-                )
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_no_content(
+                        "DELETE",
+                        &format!("/groups/{group_id}/members/{user_id}"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
         }
     }
 
-    pub async fn get_members(&self, group_id: i64) -> Result<Vec<User>> {
+    pub async fn get_members(&self, group_id: i64, token: Option<&str>) -> Result<Vec<User>> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let rows = sqlx::query(
                     "SELECT u.* FROM users u \
                      JOIN user_groups ug ON u.id = ug.user_id \
@@ -290,15 +342,24 @@ impl GroupManager {
                     })
                     .collect()
             }
-            Backend::Relay(relay) => relay
-                .request_json("GET", &format!("/groups/{group_id}/members"), None, true)
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json(
+                        "GET",
+                        &format!("/groups/{group_id}/members"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
         }
     }
 
-    pub async fn get_user_groups(&self, user_id: i64) -> Result<Vec<Group>> {
+    pub async fn get_user_groups(&self, user_id: i64, token: Option<&str>) -> Result<Vec<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let rows = sqlx::query(
                     "SELECT g.* FROM groups g \
                      JOIN user_groups ug ON g.id = ug.group_id \
@@ -310,9 +371,17 @@ impl GroupManager {
                 .await?;
                 rows.iter().map(Group::from_row).collect()
             }
-            Backend::Relay(relay) => relay
-                .request_json("GET", &format!("/users/{user_id}/groups"), None, true)
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json(
+                        "GET",
+                        &format!("/users/{user_id}/groups"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
         }
     }
 }
