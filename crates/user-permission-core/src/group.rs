@@ -42,6 +42,18 @@ pub struct GroupManager {
     backend: Arc<Backend>,
 }
 
+/// Manager for group records and membership.
+///
+/// The trailing `token: Option<&str>` argument on each method controls the
+/// `Authorization: Bearer` header used for the relay backend:
+///
+/// - `Some(t)` — send `t` as the bearer token (per-call override, useful for
+///   pass-through of an end-user cookie from a shared `Database` instance).
+/// - `None` — fall back to the token stored internally via
+///   [`Database::login`](crate::Database::login).
+///
+/// For the local SQLite backend the argument is ignored (the local backend
+/// does not perform authorization checks here).
 impl GroupManager {
     pub(crate) fn new(backend: Arc<Backend>) -> Self {
         Self { backend }
@@ -186,10 +198,7 @@ impl GroupManager {
                     return self.get_by_id(group_id, token).await;
                 }
                 fields.push("updated_at = datetime('now')");
-                let sql = format!(
-                    "UPDATE groups SET {} WHERE id = ?",
-                    fields.join(", ")
-                );
+                let sql = format!("UPDATE groups SET {} WHERE id = ?", fields.join(", "));
                 let mut q = sqlx::query(&sql);
                 for p in &params {
                     q = match p {
@@ -250,22 +259,15 @@ impl GroupManager {
         }
     }
 
-    pub async fn add_user(
-        &self,
-        group_id: i64,
-        user_id: i64,
-        token: Option<&str>,
-    ) -> Result<bool> {
+    pub async fn add_user(&self, group_id: i64, user_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
                 let _ = token;
-                let res = sqlx::query(
-                    "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
-                )
-                .bind(user_id)
-                .bind(group_id)
-                .execute(&local.pool)
-                .await;
+                let res = sqlx::query("INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)")
+                    .bind(user_id)
+                    .bind(group_id)
+                    .execute(&local.pool)
+                    .await;
                 Ok(res.is_ok())
             }
             Backend::Relay(relay) => {
@@ -293,13 +295,11 @@ impl GroupManager {
         match &*self.backend {
             Backend::Local(local) => {
                 let _ = token;
-                let res = sqlx::query(
-                    "DELETE FROM user_groups WHERE user_id = ? AND group_id = ?",
-                )
-                .bind(user_id)
-                .bind(group_id)
-                .execute(&local.pool)
-                .await?;
+                let res = sqlx::query("DELETE FROM user_groups WHERE user_id = ? AND group_id = ?")
+                    .bind(user_id)
+                    .bind(group_id)
+                    .execute(&local.pool)
+                    .await?;
                 Ok(res.rows_affected() > 0)
             }
             Backend::Relay(relay) => {

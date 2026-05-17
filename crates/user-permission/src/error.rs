@@ -47,9 +47,7 @@ impl From<CoreError> for ApiError {
                 err.bearer_challenge = true;
                 err
             }
-            CoreError::MissingTokenManager => {
-                ApiError::internal("token manager not configured")
-            }
+            CoreError::MissingTokenManager => ApiError::internal("token manager not configured"),
             err if err.is_unique_violation() => {
                 ApiError::new(StatusCode::CONFLICT, err.to_string())
             }

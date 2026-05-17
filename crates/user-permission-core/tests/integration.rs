@@ -15,7 +15,11 @@ async fn open_test_db() -> (Database, tempfile::TempDir) {
 #[tokio::test]
 async fn first_user_auto_admin() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "Alice", None).await.unwrap();
+    let alice = db
+        .users()
+        .create("alice", "pw", "Alice", None)
+        .await
+        .unwrap();
     assert!(db.users().is_admin(alice.id, None).await.unwrap());
 
     let bob = db.users().create("bob", "pw", "Bob", None).await.unwrap();
@@ -25,7 +29,11 @@ async fn first_user_auto_admin() {
 #[tokio::test]
 async fn user_crud() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "Alice", None).await.unwrap();
+    let alice = db
+        .users()
+        .create("alice", "pw", "Alice", None)
+        .await
+        .unwrap();
     assert_eq!(alice.username, "alice");
     assert_eq!(alice.display_name, "Alice");
     assert!(alice.is_active);
@@ -33,7 +41,12 @@ async fn user_crud() {
     let fetched = db.users().get_by_id(alice.id, None).await.unwrap().unwrap();
     assert_eq!(fetched.username, "alice");
 
-    let by_name = db.users().get_by_username("alice", None).await.unwrap().unwrap();
+    let by_name = db
+        .users()
+        .get_by_username("alice", None)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(by_name.id, alice.id);
 
     let updated = db
@@ -43,7 +56,9 @@ async fn user_crud() {
             UserUpdate {
                 display_name: Some("Alice Smith".into()),
                 ..Default::default()
-            }, None)
+            },
+            None,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -54,15 +69,27 @@ async fn user_crud() {
 
     let deleted = db.users().delete(alice.id, None).await.unwrap();
     assert!(deleted);
-    assert!(db.users().get_by_id(alice.id, None).await.unwrap().is_none());
+    assert!(db
+        .users()
+        .get_by_id(alice.id, None)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
 async fn duplicate_username_conflict() {
     let (db, _dir) = open_test_db().await;
     db.users().create("alice", "pw", "", None).await.unwrap();
-    let err = db.users().create("alice", "pw2", "", None).await.unwrap_err();
-    assert!(err.is_unique_violation(), "expected unique violation, got {err}");
+    let err = db
+        .users()
+        .create("alice", "pw2", "", None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.is_unique_violation(),
+        "expected unique violation, got {err}"
+    );
 }
 
 #[tokio::test]
@@ -76,7 +103,10 @@ async fn authenticate_and_verify() {
         .unwrap()
         .expect("token");
     let claims = db.token_manager().unwrap().verify_token(&token).unwrap();
-    assert_eq!(claims["username"], serde_json::Value::String("alice".into()));
+    assert_eq!(
+        claims["username"],
+        serde_json::Value::String("alice".into())
+    );
     assert_eq!(claims["is_admin"], serde_json::Value::Bool(true)); // first user is admin
 
     assert!(db
@@ -106,7 +136,11 @@ async fn group_crud_and_membership() {
         .unwrap();
     assert!(!editors.is_admin);
 
-    assert!(db.groups().add_user(editors.id, bob.id, None).await.unwrap());
+    assert!(db
+        .groups()
+        .add_user(editors.id, bob.id, None)
+        .await
+        .unwrap());
     let members = db.groups().get_members(editors.id, None).await.unwrap();
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].username, "bob");
@@ -120,8 +154,17 @@ async fn group_crud_and_membership() {
     assert_eq!(alice_groups.len(), 1);
     assert!(alice_groups[0].is_admin);
 
-    assert!(db.groups().remove_user(editors.id, bob.id, None).await.unwrap());
-    assert!(db.groups().get_members(editors.id, None).await.unwrap().is_empty());
+    assert!(db
+        .groups()
+        .remove_user(editors.id, bob.id, None)
+        .await
+        .unwrap());
+    assert!(db
+        .groups()
+        .get_members(editors.id, None)
+        .await
+        .unwrap()
+        .is_empty());
 
     let updated = db
         .groups()
@@ -130,7 +173,9 @@ async fn group_crud_and_membership() {
             GroupUpdate {
                 description: Some("New desc".into()),
                 ..Default::default()
-            }, None)
+            },
+            None,
+        )
         .await
         .unwrap()
         .unwrap();

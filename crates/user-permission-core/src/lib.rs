@@ -24,8 +24,8 @@ mod error;
 mod group;
 pub mod password;
 mod relay;
-mod user;
 pub mod token;
+mod user;
 
 pub use database::Database;
 pub use error::{Error, Result};

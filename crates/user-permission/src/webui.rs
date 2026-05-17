@@ -185,30 +185,17 @@ fn render<T: Template>(tpl: T) -> Response {
             .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "template render failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "template render failed",
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "template render failed").into_response()
         }
     }
 }
 
 fn render_with_status<T: Template>(tpl: T, status: StatusCode) -> Response {
     match tpl.render() {
-        Ok(html) => (
-            status,
-            [(CONTENT_TYPE, "text/html; charset=utf-8")],
-            html,
-        )
-            .into_response(),
+        Ok(html) => (status, [(CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "template render failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "template render failed",
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "template render failed").into_response()
         }
     }
 }
@@ -226,9 +213,7 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
 }
 
 fn set_cookie_value(token: &str, max_age_secs: i64) -> String {
-    format!(
-        "{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}"
-    )
+    format!("{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}")
 }
 
 fn delete_cookie_value() -> String {
@@ -246,7 +231,10 @@ fn is_htmx(headers: &HeaderMap) -> bool {
 fn redirect_to(target: &str) -> Response {
     (
         StatusCode::SEE_OTHER,
-        [(LOCATION, HeaderValue::from_str(target).unwrap_or(HeaderValue::from_static("/")))],
+        [(
+            LOCATION,
+            HeaderValue::from_str(target).unwrap_or(HeaderValue::from_static("/")),
+        )],
     )
         .into_response()
 }
@@ -256,7 +244,10 @@ fn redirect_to_login(prefix: &str, htmx: bool) -> Response {
     if htmx {
         (
             StatusCode::UNAUTHORIZED,
-            [(HX_REDIRECT, HeaderValue::from_str(&target).unwrap_or(HeaderValue::from_static("/login")))],
+            [(
+                HX_REDIRECT,
+                HeaderValue::from_str(&target).unwrap_or(HeaderValue::from_static("/login")),
+            )],
         )
             .into_response()
     } else {
@@ -264,10 +255,7 @@ fn redirect_to_login(prefix: &str, htmx: bool) -> Response {
     }
 }
 
-async fn current_user(
-    state: &Arc<AppState>,
-    headers: &HeaderMap,
-) -> Option<UserView> {
+async fn current_user(state: &Arc<AppState>, headers: &HeaderMap) -> Option<UserView> {
     let token = cookie_token(headers)?;
     let claims = state.db.token_manager().ok()?.verify_token(&token).ok()?;
     let user_id: i64 = claims.get("sub")?.as_str()?.parse().ok()?;
@@ -318,7 +306,9 @@ pub fn router(prefix: &str) -> Router<Arc<AppState>> {
         .route(&join("users"), get(users_page).post(users_create))
         .route(
             &join("users/:user_id"),
-            get(users_edit_page).post(users_edit_submit).delete(users_delete),
+            get(users_edit_page)
+                .post(users_edit_submit)
+                .delete(users_delete),
         )
         .route(&join("users/:user_id/active"), post(users_toggle_active))
         .route(&join("users/:user_id/admin"), post(users_toggle_admin))
@@ -339,10 +329,7 @@ pub fn router(prefix: &str) -> Router<Arc<AppState>> {
 // Auth handlers
 // ---------------------------------------------------------------------------
 
-async fn login_page(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn login_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let prefix = prefix(&state).to_string();
     if current_user(&state, &headers).await.is_some() {
         return redirect_to(&format!("{prefix}/"));
@@ -361,10 +348,7 @@ struct LoginForm {
     password: String,
 }
 
-async fn login_submit(
-    State(state): State<Arc<AppState>>,
-    Form(form): Form<LoginForm>,
-) -> Response {
+async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) -> Response {
     let prefix = prefix(&state).to_string();
     let expires = state.config.webui_token_expires;
     match state
@@ -412,10 +396,7 @@ async fn logout(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-async fn register_page(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn register_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let prefix = prefix(&state).to_string();
     if current_user(&state, &headers).await.is_some() {
         return redirect_to(&format!("{prefix}/"));
@@ -656,8 +637,8 @@ async fn me_password(
                         password: Some(form.new_password),
                         ..Default::default()
                     },
-            None,
-        )
+                    None,
+                )
                 .await;
             render(MeTemplate {
                 prefix: &prefix,
@@ -688,19 +669,11 @@ async fn me_password(
 // ---------------------------------------------------------------------------
 
 async fn build_user_view(state: &Arc<AppState>, u: User) -> UserView {
-    let is_admin = state
-        .db
-        .users()
-        .is_admin(u.id, None)
-        .await
-        .unwrap_or(false);
+    let is_admin = state.db.users().is_admin(u.id, None).await.unwrap_or(false);
     UserView::from_user(u, is_admin)
 }
 
-async fn users_page(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn users_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let prefix = prefix(&state).to_string();
     let Some(user) = current_user(&state, &headers).await else {
         return redirect_to_login(&prefix, is_htmx(&headers));
@@ -757,11 +730,9 @@ async fn users_create(
                 StatusCode::CREATED,
             )
         }
-        Err(err) if err.is_unique_violation() => (
-            StatusCode::CONFLICT,
-            "そのユーザー名は既に使われています",
-        )
-            .into_response(),
+        Err(err) if err.is_unique_violation() => {
+            (StatusCode::CONFLICT, "そのユーザー名は既に使われています").into_response()
+        }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "作成に失敗しました").into_response(),
     }
 }
@@ -788,7 +759,10 @@ async fn users_delete(
                     [
                         (HX_REDIRECT, HeaderValue::from_str(&target).unwrap()),
                         (SET_COOKIE, HeaderValue::from_str(&cookie).unwrap()),
-                        (CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8")),
+                        (
+                            CONTENT_TYPE,
+                            HeaderValue::from_static("text/html; charset=utf-8"),
+                        ),
                     ],
                     "",
                 )
@@ -874,7 +848,11 @@ async fn users_toggle_admin(
         .is_admin(user_id, None)
         .await
         .unwrap_or(false);
-    let _ = state.db.users().set_admin(user_id, !currently_admin, None).await;
+    let _ = state
+        .db
+        .users()
+        .set_admin(user_id, !currently_admin, None)
+        .await;
     let view = build_user_view(&state, target).await;
     render(UserRowTemplate {
         prefix: &prefix,
@@ -955,7 +933,12 @@ async fn users_edit_submit(
         Ok(None) => return (StatusCode::NOT_FOUND, "ユーザーが見つかりません").into_response(),
         Err(_) => return server_error_response(),
     };
-    let target_is_admin = state.db.users().is_admin(user_id, None).await.unwrap_or(false);
+    let target_is_admin = state
+        .db
+        .users()
+        .is_admin(user_id, None)
+        .await
+        .unwrap_or(false);
     let target_groups = state
         .db
         .groups()
@@ -1064,7 +1047,12 @@ async fn users_reset_password(
             None,
         )
         .await;
-    let target_is_admin = state.db.users().is_admin(user_id, None).await.unwrap_or(false);
+    let target_is_admin = state
+        .db
+        .users()
+        .is_admin(user_id, None)
+        .await
+        .unwrap_or(false);
     let target_groups = state
         .db
         .groups()
@@ -1090,10 +1078,7 @@ async fn users_reset_password(
 // Groups
 // ---------------------------------------------------------------------------
 
-async fn groups_page(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn groups_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let prefix = prefix(&state).to_string();
     let Some(user) = current_user(&state, &headers).await else {
         return redirect_to_login(&prefix, is_htmx(&headers));
@@ -1145,11 +1130,9 @@ async fn groups_create(
             },
             StatusCode::CREATED,
         ),
-        Err(err) if err.is_unique_violation() => (
-            StatusCode::CONFLICT,
-            "そのグループ名は既に使われています",
-        )
-            .into_response(),
+        Err(err) if err.is_unique_violation() => {
+            (StatusCode::CONFLICT, "そのグループ名は既に使われています").into_response()
+        }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "作成に失敗しました").into_response(),
     }
 }
@@ -1242,10 +1225,9 @@ async fn group_update(
         .await;
     let (group_to_show, error_msg) = match update {
         Ok(Some(g)) => (g, None),
-        Err(err) if err.is_unique_violation() => (
-            existing,
-            Some("そのグループ名は既に使われています"),
-        ),
+        Err(err) if err.is_unique_violation() => {
+            (existing, Some("そのグループ名は既に使われています"))
+        }
         _ => (existing, Some("更新に失敗しました")),
     };
     let members = state
@@ -1321,7 +1303,12 @@ async fn group_add_member(
         Ok(Some(u)) => u,
         _ => return (StatusCode::NOT_FOUND, "対象が見つかりません").into_response(),
     };
-    match state.db.groups().add_user(group_id, form.user_id, None).await {
+    match state
+        .db
+        .groups()
+        .add_user(group_id, form.user_id, None)
+        .await
+    {
         Ok(true) => render_with_status(
             MemberRowTemplate {
                 prefix: &prefix,

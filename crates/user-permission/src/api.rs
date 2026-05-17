@@ -135,10 +135,7 @@ pub fn router() -> Router<Arc<AppState>> {
             "/groups/:group_id/members",
             post(add_member).get(list_members),
         )
-        .route(
-            "/groups/:group_id/members/:user_id",
-            delete(remove_member),
-        )
+        .route("/groups/:group_id/members/:user_id", delete(remove_member))
 }
 
 async fn login(
@@ -150,9 +147,7 @@ async fn login(
         .users()
         .authenticate(&form.username, &form.password, state.config.token_expires)
         .await?
-        .ok_or_else(|| {
-            ApiError::unauthorized("Invalid username or password")
-        })?;
+        .ok_or_else(|| ApiError::unauthorized("Invalid username or password"))?;
     Ok(Json(TokenResponse {
         access_token: token,
         token_type: "bearer",
@@ -184,7 +179,10 @@ async fn create_user(
             }
         })?;
     let is_admin = state.db.users().is_admin(user.id, None).await?;
-    Ok((StatusCode::CREATED, Json(UserResponse::from_user(user, is_admin))))
+    Ok((
+        StatusCode::CREATED,
+        Json(UserResponse::from_user(user, is_admin)),
+    ))
 }
 
 async fn list_users(
@@ -223,7 +221,10 @@ async fn update_user(
 ) -> Result<Json<UserResponse>, ApiError> {
     let caller_is_admin = state.db.users().is_admin(current.id, None).await?;
     if current.id != user_id && !caller_is_admin {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "Admin privileges required"));
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Admin privileges required",
+        ));
     }
     let updated = state
         .db
@@ -258,7 +259,10 @@ async fn delete_user(
 ) -> Result<StatusCode, ApiError> {
     let caller_is_admin = state.db.users().is_admin(current.id, None).await?;
     if current.id != user_id && !caller_is_admin {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "Admin privileges required"));
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Admin privileges required",
+        ));
     }
     if !state.db.users().delete(user_id, None).await? {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "User not found"));
@@ -360,7 +364,12 @@ async fn add_member(
     if body.group_id != group_id {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "group_id mismatch"));
     }
-    if !state.db.groups().add_user(group_id, body.user_id, None).await? {
+    if !state
+        .db
+        .groups()
+        .add_user(group_id, body.user_id, None)
+        .await?
+    {
         return Err(ApiError::new(StatusCode::CONFLICT, "Already a member"));
     }
     Ok((
@@ -374,7 +383,12 @@ async fn remove_member(
     Path((group_id, user_id)): Path<(i64, i64)>,
     AdminUser(_): AdminUser,
 ) -> Result<StatusCode, ApiError> {
-    if !state.db.groups().remove_user(group_id, user_id, None).await? {
+    if !state
+        .db
+        .groups()
+        .remove_user(group_id, user_id, None)
+        .await?
+    {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "Member not found"));
     }
     Ok(StatusCode::NO_CONTENT)

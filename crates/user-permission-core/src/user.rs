@@ -44,6 +44,18 @@ pub struct UserManager {
     backend: Arc<Backend>,
 }
 
+/// Manager for user records.
+///
+/// The trailing `token: Option<&str>` argument on each method controls the
+/// `Authorization: Bearer` header used for the relay backend:
+///
+/// - `Some(t)` — send `t` as the bearer token (per-call override, useful for
+///   pass-through of an end-user cookie from a shared `Database` instance).
+/// - `None` — fall back to the token stored internally via
+///   [`Database::login`](crate::Database::login).
+///
+/// For the local SQLite backend the argument is ignored (the local backend
+/// does not perform authorization checks here).
 impl UserManager {
     pub(crate) fn new(backend: Arc<Backend>) -> Self {
         Self { backend }
@@ -219,10 +231,7 @@ impl UserManager {
                     return self.get_by_id(user_id, token).await;
                 }
                 fields.push("updated_at = datetime('now')");
-                let sql = format!(
-                    "UPDATE users SET {} WHERE id = ?",
-                    fields.join(", ")
-                );
+                let sql = format!("UPDATE users SET {} WHERE id = ?", fields.join(", "));
                 let mut q = sqlx::query(&sql);
                 for p in &params {
                     q = match p {
@@ -304,14 +313,12 @@ impl UserManager {
             Backend::Relay(relay) => {
                 let bearer = relay.resolve_auth(token);
                 let user: Value = relay
-                    .request_json(
-                        "GET",
-                        &format!("/users/{user_id}"),
-                        None,
-                        bearer.as_deref(),
-                    )
+                    .request_json("GET", &format!("/users/{user_id}"), None, bearer.as_deref())
                     .await?;
-                Ok(user.get("is_admin").and_then(Value::as_bool).unwrap_or(false))
+                Ok(user
+                    .get("is_admin")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
             }
         }
     }
@@ -329,20 +336,18 @@ impl UserManager {
         let mut tx = pool.begin().await?;
 
         if is_admin {
-            let group_id: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM groups WHERE name = ? AND is_admin = 1",
-            )
-            .bind("admin")
-            .fetch_optional(&mut *tx)
-            .await?;
+            let group_id: Option<(i64,)> =
+                sqlx::query_as("SELECT id FROM groups WHERE name = ? AND is_admin = 1")
+                    .bind("admin")
+                    .fetch_optional(&mut *tx)
+                    .await?;
             let group_id = if let Some((id,)) = group_id {
                 id
             } else {
-                let row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM groups WHERE is_admin = 1 ORDER BY id LIMIT 1",
-                )
-                .fetch_optional(&mut *tx)
-                .await?;
+                let row: Option<(i64,)> =
+                    sqlx::query_as("SELECT id FROM groups WHERE is_admin = 1 ORDER BY id LIMIT 1")
+                        .fetch_optional(&mut *tx)
+                        .await?;
                 if let Some((id,)) = row {
                     id
                 } else {
@@ -389,12 +394,10 @@ impl UserManager {
                     .token_manager
                     .as_ref()
                     .ok_or(Error::MissingTokenManager)?;
-                let row = sqlx::query(
-                    "SELECT * FROM users WHERE username = ? AND is_active = 1",
-                )
-                .bind(username)
-                .fetch_optional(&local.pool)
-                .await?;
+                let row = sqlx::query("SELECT * FROM users WHERE username = ? AND is_active = 1")
+                    .bind(username)
+                    .fetch_optional(&local.pool)
+                    .await?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
