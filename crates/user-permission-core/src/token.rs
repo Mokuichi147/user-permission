@@ -18,7 +18,10 @@ pub fn load_or_create_secret(path: impl AsRef<Path>) -> Result<String> {
     }
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    let secret = bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    let secret = bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;

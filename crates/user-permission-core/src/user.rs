@@ -44,6 +44,18 @@ pub struct UserManager {
     backend: Arc<Backend>,
 }
 
+/// Manager for user records.
+///
+/// The trailing `token: Option<&str>` argument on each method controls the
+/// `Authorization: Bearer` header used for the relay backend:
+///
+/// - `Some(t)` — send `t` as the bearer token (per-call override, useful for
+///   pass-through of an end-user cookie from a shared `Database` instance).
+/// - `None` — fall back to the token stored internally via
+///   [`Database::login`](crate::Database::login).
+///
+/// For the local SQLite backend the argument is ignored (the local backend
+/// does not perform authorization checks here).
 impl UserManager {
     pub(crate) fn new(backend: Arc<Backend>) -> Self {
         Self { backend }
@@ -54,6 +66,7 @@ impl UserManager {
         username: &str,
         password: &str,
         display_name: &str,
+        token: Option<&str>,
     ) -> Result<User> {
         match &*self.backend {
             Backend::Local(local) => {
@@ -120,27 +133,39 @@ impl UserManager {
                     "password": password,
                     "display_name": display_name,
                 });
-                relay.request_json("POST", "/users", Some(body), false).await
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json("POST", "/users", Some(body), bearer.as_deref())
+                    .await
             }
         }
     }
 
-    pub async fn get_by_id(&self, user_id: i64) -> Result<Option<User>> {
+    pub async fn get_by_id(&self, user_id: i64, token: Option<&str>) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let row = sqlx::query("SELECT * FROM users WHERE id = ?")
                     .bind(user_id)
                     .fetch_optional(&local.pool)
                     .await?;
                 row.as_ref().map(User::from_row).transpose()
             }
-            Backend::Relay(relay) => relay
-                .request_json_opt("GET", &format!("/users/{user_id}"), None, true)
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_json_opt("GET", &format!("/users/{user_id}"), None, bearer.as_deref())
+                    .await
+            }
         }
     }
 
-    pub async fn get_by_username(&self, username: &str) -> Result<Option<User>> {
+    pub async fn get_by_username(
+        &self,
+        username: &str,
+        token: Option<&str>,
+    ) -> Result<Option<User>> {
+        let _ = token;
         match &*self.backend {
             Backend::Local(local) => {
                 let row = sqlx::query("SELECT * FROM users WHERE username = ?")
@@ -155,22 +180,31 @@ impl UserManager {
         }
     }
 
-    pub async fn list_all(&self) -> Result<Vec<User>> {
+    pub async fn list_all(&self, token: Option<&str>) -> Result<Vec<User>> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let rows = sqlx::query("SELECT * FROM users ORDER BY id")
                     .fetch_all(&local.pool)
                     .await?;
                 rows.iter().map(User::from_row).collect()
             }
             Backend::Relay(relay) => {
-                let users: Vec<User> = relay.request_json("GET", "/users", None, true).await?;
+                let bearer = relay.resolve_auth(token);
+                let users: Vec<User> = relay
+                    .request_json("GET", "/users", None, bearer.as_deref())
+                    .await?;
                 Ok(users)
             }
         }
     }
 
-    pub async fn update(&self, user_id: i64, update: UserUpdate) -> Result<Option<User>> {
+    pub async fn update(
+        &self,
+        user_id: i64,
+        update: UserUpdate,
+        token: Option<&str>,
+    ) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
                 let pool = &local.pool;
@@ -194,13 +228,10 @@ impl UserManager {
                     params.push(Value::Number((a as i64).into()));
                 }
                 if fields.is_empty() {
-                    return self.get_by_id(user_id).await;
+                    return self.get_by_id(user_id, token).await;
                 }
                 fields.push("updated_at = datetime('now')");
-                let sql = format!(
-                    "UPDATE users SET {} WHERE id = ?",
-                    fields.join(", ")
-                );
+                let sql = format!("UPDATE users SET {} WHERE id = ?", fields.join(", "));
                 let mut q = sqlx::query(&sql);
                 for p in &params {
                     q = match p {
@@ -211,7 +242,7 @@ impl UserManager {
                 }
                 q = q.bind(user_id);
                 q.execute(pool).await.map_err(map_unique_error)?;
-                self.get_by_id(user_id).await
+                self.get_by_id(user_id, token).await
             }
             Backend::Relay(relay) => {
                 let mut body = Map::new();
@@ -227,36 +258,47 @@ impl UserManager {
                 if let Some(a) = update.is_active {
                     body.insert("is_active".into(), Value::Bool(a));
                 }
+                let bearer = relay.resolve_auth(token);
                 relay
                     .request_json_opt(
                         "PATCH",
                         &format!("/users/{user_id}"),
                         Some(Value::Object(body)),
-                        true,
+                        bearer.as_deref(),
                     )
                     .await
             }
         }
     }
 
-    pub async fn delete(&self, user_id: i64) -> Result<bool> {
+    pub async fn delete(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let res = sqlx::query("DELETE FROM users WHERE id = ?")
                     .bind(user_id)
                     .execute(&local.pool)
                     .await?;
                 Ok(res.rows_affected() > 0)
             }
-            Backend::Relay(relay) => relay
-                .request_no_content("DELETE", &format!("/users/{user_id}"), None, true)
-                .await,
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_no_content(
+                        "DELETE",
+                        &format!("/users/{user_id}"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
         }
     }
 
-    pub async fn is_admin(&self, user_id: i64) -> Result<bool> {
+    pub async fn is_admin(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
+                let _ = token;
                 let row = sqlx::query(
                     "SELECT 1 AS one FROM user_groups ug \
                      JOIN groups g ON ug.group_id = g.id \
@@ -269,35 +311,43 @@ impl UserManager {
                 Ok(row.is_some())
             }
             Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
                 let user: Value = relay
-                    .request_json("GET", &format!("/users/{user_id}"), None, true)
+                    .request_json("GET", &format!("/users/{user_id}"), None, bearer.as_deref())
                     .await?;
-                Ok(user.get("is_admin").and_then(Value::as_bool).unwrap_or(false))
+                Ok(user
+                    .get("is_admin")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
             }
         }
     }
 
     /// Promote or demote a user by joining/leaving an admin group.
-    pub async fn set_admin(&self, user_id: i64, is_admin: bool) -> Result<bool> {
+    pub async fn set_admin(
+        &self,
+        user_id: i64,
+        is_admin: bool,
+        token: Option<&str>,
+    ) -> Result<bool> {
+        let _ = token;
         let local = self.backend.as_local()?;
         let pool = &local.pool;
         let mut tx = pool.begin().await?;
 
         if is_admin {
-            let group_id: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM groups WHERE name = ? AND is_admin = 1",
-            )
-            .bind("admin")
-            .fetch_optional(&mut *tx)
-            .await?;
+            let group_id: Option<(i64,)> =
+                sqlx::query_as("SELECT id FROM groups WHERE name = ? AND is_admin = 1")
+                    .bind("admin")
+                    .fetch_optional(&mut *tx)
+                    .await?;
             let group_id = if let Some((id,)) = group_id {
                 id
             } else {
-                let row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM groups WHERE is_admin = 1 ORDER BY id LIMIT 1",
-                )
-                .fetch_optional(&mut *tx)
-                .await?;
+                let row: Option<(i64,)> =
+                    sqlx::query_as("SELECT id FROM groups WHERE is_admin = 1 ORDER BY id LIMIT 1")
+                        .fetch_optional(&mut *tx)
+                        .await?;
                 if let Some((id,)) = row {
                     id
                 } else {
@@ -344,12 +394,10 @@ impl UserManager {
                     .token_manager
                     .as_ref()
                     .ok_or(Error::MissingTokenManager)?;
-                let row = sqlx::query(
-                    "SELECT * FROM users WHERE username = ? AND is_active = 1",
-                )
-                .bind(username)
-                .fetch_optional(&local.pool)
-                .await?;
+                let row = sqlx::query("SELECT * FROM users WHERE username = ? AND is_active = 1")
+                    .bind(username)
+                    .fetch_optional(&local.pool)
+                    .await?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
@@ -358,7 +406,7 @@ impl UserManager {
                     return Ok(None);
                 }
                 let user = User::from_row(&row)?;
-                let is_admin = self.is_admin(user.id).await?;
+                let is_admin = self.is_admin(user.id, None).await?;
                 let mut extra = Map::new();
                 extra.insert("is_admin".into(), Value::Bool(is_admin));
                 let token = token_manager.create_token(

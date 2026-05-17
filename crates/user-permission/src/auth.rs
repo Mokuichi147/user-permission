@@ -56,7 +56,7 @@ async fn resolve_user(state: &Arc<AppState>, token: &str) -> Result<User, ApiErr
     let user = state
         .db
         .users()
-        .get_by_id(user_id)
+        .get_by_id(user_id, None)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?
         .ok_or_else(|| ApiError::unauthorized("user not found"))?;
@@ -97,7 +97,7 @@ impl FromRequestParts<Arc<AppState>> for AdminUser {
         let is_admin = state
             .db
             .users()
-            .is_admin(user.id)
+            .is_admin(user.id, None)
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
         if !is_admin {
