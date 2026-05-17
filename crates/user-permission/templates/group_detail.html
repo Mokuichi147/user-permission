@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name }}{% endblock %}
+{% block content %}
+<div class="space-y-4">
+  <a href="{{ prefix }}/groups" class="text-sm text-blue-600 hover:underline">← グループ一覧</a>
+
+  <div class="bg-white p-6 rounded shadow">
+    <h2 class="font-semibold mb-4">グループ情報 {% if group.is_admin %}<span class="bg-amber-100 text-amber-800 text-xs px-2 py-0.5 rounded">🔑 管理者</span>{% endif %}</h2>
+    {% if update_success %}<p class="text-green-700 text-sm mb-3">更新しました</p>{% endif %}
+    {% if let Some(err) = update_error %}<p class="text-red-600 text-sm mb-3">{{ err }}</p>{% endif %}
+    {% if is_admin %}
+    <form method="post" action="{{ prefix }}/groups/{{ group.id }}" class="space-y-3">
+      <label class="block">
+        <span class="text-sm">名前</span>
+        <input name="name" value="{{ group.name }}" required class="w-full border rounded px-2 py-1">
+      </label>
+      <label class="block">
+        <span class="text-sm">説明</span>
+        <input name="description" value="{{ group.description }}" class="w-full border rounded px-2 py-1">
+      </label>
+      <label class="flex items-center gap-2 text-sm">
+        <input name="is_admin" type="checkbox" value="1"{% if group.is_admin %} checked{% endif %}>
+        管理者グループにする（このグループのメンバーは UserPermission を管理できます）
+      </label>
+      <button class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">更新</button>
+    </form>
+    {% else %}
+    <dl class="text-sm space-y-1">
+      <div><dt class="inline font-medium">名前:</dt> <dd class="inline">{{ group.name }}</dd></div>
+      <div><dt class="inline font-medium">説明:</dt> <dd class="inline">{{ group.description }}</dd></div>
+    </dl>
+    <p class="text-xs text-slate-500 mt-3">編集は管理者のみ可能です。</p>
+    {% endif %}
+  </div>
+
+  {% if is_admin %}
+  <div class="bg-white p-6 rounded shadow">
+    <h2 class="font-semibold mb-3">メンバー追加</h2>
+    {% if !non_members.is_empty() %}
+    <form hx-post="{{ prefix }}/groups/{{ group.id }}/members"
+          hx-target="#members-rows"
+          hx-swap="beforeend"
+          hx-on::after-request="if(event.detail.successful){const o=this.querySelector('option[value=\''+new FormData(this).get('user_id')+'\']');if(o)o.remove();this.reset();document.getElementById('member-add-error').textContent='';}else{document.getElementById('member-add-error').textContent=event.detail.xhr.responseText||'追加に失敗しました';}"
+          class="flex gap-2">
+      <select name="user_id" required class="border rounded px-2 py-1 flex-1">
+        <option value="">ユーザーを選択...</option>
+        {% for u in non_members %}
+        <option value="{{ u.id }}">{% if u.display_name.is_empty() %}{{ u.username }}{% else %}{{ u.display_name }}{% endif %} ({{ u.username }})</option>
+        {% endfor %}
+      </select>
+      <button class="bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">追加</button>
+    </form>
+    <div id="member-add-error" class="text-red-600 text-sm mt-2"></div>
+    {% else %}
+    <p class="text-sm text-slate-500">追加可能なユーザーはいません。</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="bg-white rounded shadow overflow-hidden">
+    <h2 class="font-semibold p-4 border-b">メンバー一覧</h2>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-left">
+        <tr>
+          <th class="px-3 py-2">ID</th>
+          <th class="px-3 py-2">ユーザー名</th>
+          <th class="px-3 py-2">表示名</th>
+          <th class="px-3 py-2 text-right">操作</th>
+        </tr>
+      </thead>
+      <tbody id="members-rows">
+        {% for u in members %}{% include "member_row.html" %}{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

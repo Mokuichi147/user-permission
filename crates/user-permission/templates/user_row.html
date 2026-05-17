@@ -1,0 +1,40 @@
+<tr id="user-row-{{ u.id }}" class="border-t">
+  <td class="px-3 py-2">{{ u.id }}</td>
+  <td class="px-3 py-2 font-mono">
+    {{ u.username }}
+    {% if u.is_admin %}<span class="ml-1 bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded">管理者</span>{% endif %}
+  </td>
+  <td class="px-3 py-2">{{ u.display_name }}</td>
+  <td class="px-3 py-2">
+    {% if is_admin || u.id == current_user_id %}
+    <button class="{% if u.is_active %}text-green-600{% else %}text-slate-400{% endif %} hover:underline"
+      hx-post="{{ prefix }}/users/{{ u.id }}/active"
+      hx-target="#user-row-{{ u.id }}"
+      hx-swap="outerHTML">{% if u.is_active %}有効{% else %}無効{% endif %}</button>
+    {% else %}
+      {% if u.is_active %}<span class="text-green-600">有効</span>{% else %}<span class="text-slate-400">無効</span>{% endif %}
+    {% endif %}
+  </td>
+  <td class="px-3 py-2 text-slate-500">{{ u.created_at }}</td>
+  <td class="px-3 py-2 text-right whitespace-nowrap">
+    {% if u.id == current_user_id %}
+    <a href="{{ prefix }}/me" class="text-blue-600 hover:underline">編集</a>
+    {% else if is_admin %}
+    <a href="{{ prefix }}/users/{{ u.id }}" class="text-blue-600 hover:underline">編集</a>
+    {% endif %}
+    {% if is_admin && u.id != current_user_id %}
+    <button class="text-amber-700 hover:underline ml-2"
+      hx-post="{{ prefix }}/users/{{ u.id }}/admin"
+      hx-target="#user-row-{{ u.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="{% if u.is_admin %}{{ u.username }} を管理者から降格しますか？{% else %}{{ u.username }} を管理者に昇格しますか？{% endif %}">{% if u.is_admin %}降格{% else %}昇格{% endif %}</button>
+    {% endif %}
+    {% if is_admin || u.id == current_user_id %}
+    <button class="text-red-600 hover:underline ml-2"
+      hx-delete="{{ prefix }}/users/{{ u.id }}"
+      hx-target="#user-row-{{ u.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="{% if u.id == current_user_id %}自分のアカウントを削除しますか？{% else %}{{ u.username }} を削除しますか？{% endif %}">削除</button>
+    {% endif %}
+  </td>
+</tr>

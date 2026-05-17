@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}プロフィール{% endblock %}
+{% block content %}
+{% if let Some(u) = user %}
+<div class="max-w-md mx-auto space-y-6">
+  <div class="bg-white p-6 rounded shadow">
+    <h2 class="font-semibold mb-4">プロフィール編集</h2>
+    {% if profile_success %}<p class="text-green-700 text-sm mb-3">プロフィールを更新しました</p>{% endif %}
+    {% if let Some(err) = profile_error %}<p class="text-red-600 text-sm mb-3">{{ err }}</p>{% endif %}
+    <form method="post" action="{{ prefix }}/me" class="space-y-3">
+      <label class="block">
+        <span class="text-sm">ユーザー名</span>
+        <input name="username" value="{{ u.username }}" required class="w-full border rounded px-2 py-1">
+      </label>
+      <label class="block">
+        <span class="text-sm">表示名</span>
+        <input name="display_name" value="{{ u.display_name }}" class="w-full border rounded px-2 py-1">
+      </label>
+      <button class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">更新</button>
+    </form>
+  </div>
+
+  <div class="bg-white p-6 rounded shadow">
+    <h2 class="font-semibold mb-4">パスワード変更</h2>
+    {% if password_success %}<p class="text-green-700 text-sm mb-3">パスワードを変更しました</p>{% endif %}
+    {% if let Some(err) = password_error %}<p class="text-red-600 text-sm mb-3">{{ err }}</p>{% endif %}
+    <form method="post" action="{{ prefix }}/me/password" class="space-y-3">
+      <label class="block">
+        <span class="text-sm">現在のパスワード</span>
+        <input name="current_password" type="password" required class="w-full border rounded px-2 py-1">
+      </label>
+      <label class="block">
+        <span class="text-sm">新しいパスワード</span>
+        <input name="new_password" type="password" required class="w-full border rounded px-2 py-1">
+      </label>
+      <button class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">変更</button>
+    </form>
+  </div>
+
+  <div class="bg-white p-6 rounded shadow">
+    <h2 class="font-semibold mb-3">所属グループ</h2>
+    {% if !my_groups.is_empty() %}
+    <ul class="flex flex-wrap gap-2">
+      {% for g in my_groups %}
+      <li><a href="{{ prefix }}/groups/{{ g.id }}" class="inline-block bg-slate-100 px-3 py-1 rounded text-sm hover:bg-slate-200">{{ g.name }}</a></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-sm text-slate-500">所属しているグループはありません。</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}グループ{% endblock %}
+{% block content %}
+<div class="space-y-4">
+  {% if is_admin %}
+  <div class="bg-white p-4 rounded shadow">
+    <h2 class="font-semibold mb-3">新規グループ作成</h2>
+    <form hx-post="{{ prefix }}/groups"
+          hx-target="#groups-rows"
+          hx-swap="beforeend"
+          hx-on::after-request="if(event.detail.successful){this.reset();document.getElementById('group-create-error').textContent='';}else{document.getElementById('group-create-error').textContent=event.detail.xhr.responseText||'作成に失敗しました';}"
+          class="flex flex-wrap gap-2 items-center">
+      <input name="name" placeholder="グループ名" required class="border rounded px-2 py-1">
+      <input name="description" placeholder="説明" class="border rounded px-2 py-1 flex-1 min-w-0">
+      <label class="text-sm flex items-center gap-1">
+        <input name="is_admin" type="checkbox" value="1">
+        管理者グループ
+      </label>
+      <button class="bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">作成</button>
+    </form>
+    <div id="group-create-error" class="text-red-600 text-sm mt-2"></div>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-500">グループの作成・削除は管理者のみ可能です。</p>
+  {% endif %}
+
+  <div class="bg-white rounded shadow overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-left">
+        <tr>
+          <th class="px-3 py-2">ID</th>
+          <th class="px-3 py-2">名前</th>
+          <th class="px-3 py-2">説明</th>
+          <th class="px-3 py-2 text-right">操作</th>
+        </tr>
+      </thead>
+      <tbody id="groups-rows">
+        {% for g in groups %}{% include "group_row.html" %}{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

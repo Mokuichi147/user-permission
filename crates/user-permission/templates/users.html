@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}ユーザー{% endblock %}
+{% block content %}
+<div class="space-y-4">
+  <div class="bg-white p-4 rounded shadow">
+    <h2 class="font-semibold mb-3">新規ユーザー作成</h2>
+    <form hx-post="{{ prefix }}/users"
+          hx-target="#users-rows"
+          hx-swap="beforeend"
+          hx-on::after-request="if(event.detail.successful){this.reset();document.getElementById('user-create-error').textContent='';}else{document.getElementById('user-create-error').textContent=event.detail.xhr.responseText||'作成に失敗しました';}"
+          class="flex flex-wrap gap-2">
+      <input name="username" placeholder="ユーザー名" required class="border rounded px-2 py-1">
+      <input name="display_name" placeholder="表示名" class="border rounded px-2 py-1">
+      <input name="password" type="password" placeholder="パスワード" required class="border rounded px-2 py-1">
+      <button class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">作成</button>
+    </form>
+    <div id="user-create-error" class="text-red-600 text-sm mt-2"></div>
+  </div>
+
+  <div class="bg-white rounded shadow overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-left">
+        <tr>
+          <th class="px-3 py-2">ID</th>
+          <th class="px-3 py-2">ユーザー名</th>
+          <th class="px-3 py-2">表示名</th>
+          <th class="px-3 py-2">状態</th>
+          <th class="px-3 py-2">作成日</th>
+          <th class="px-3 py-2 text-right">操作</th>
+        </tr>
+      </thead>
+      <tbody id="users-rows">
+        {% for u in users %}{% include "user_row.html" %}{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

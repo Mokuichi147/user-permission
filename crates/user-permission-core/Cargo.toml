@@ -1,0 +1,35 @@
+[package]
+name = "user-permission-core"
+description = "Async user / group / permission core (SQLite backend, Argon2, JWT, optional HTTP relay)"
+keywords = ["auth", "users", "permissions", "sqlite", "jwt"]
+categories = ["authentication", "database"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "user_permission_core"
+
+[dependencies]
+tokio = { workspace = true }
+sqlx = { workspace = true }
+argon2 = { workspace = true }
+password-hash = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile = "3"
+wiremock = "0.6"

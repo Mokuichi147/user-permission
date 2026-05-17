@@ -1,0 +1,47 @@
+[package]
+name = "user-permission"
+description = "Async user / group management — axum REST API + WebUI library and a ready-to-run server binary"
+keywords = ["auth", "users", "permissions", "axum", "cli"]
+categories = ["authentication", "web-programming::http-server", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "user_permission"
+
+[[bin]]
+name = "user-permission"
+path = "src/main.rs"
+
+[dependencies]
+user-permission-core = { workspace = true }
+
+# Library deps (axum router + WebUI).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+axum = { workspace = true, features = ["macros"] }
+tower = { workspace = true }
+tower-http = { workspace = true }
+askama = { workspace = true }
+askama_axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+# Binary-only deps. Library users pay the compile-time cost, but no runtime
+# overhead. If this ever becomes a concern, gate behind a `cli` feature and
+# add `required-features = ["cli"]` to the `[[bin]]` target.
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+reqwest = { workspace = true }

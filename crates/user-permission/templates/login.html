@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}ログイン{% endblock %}
+{% block content %}
+<div class="max-w-sm mx-auto bg-white p-6 rounded shadow mt-8">
+  <h1 class="text-xl font-semibold mb-4">ログイン</h1>
+  {% if let Some(err) = error %}<p class="text-red-600 text-sm mb-3">{{ err }}</p>{% endif %}
+  <form method="post" action="{{ prefix }}/login" class="space-y-3">
+    <label class="block">
+      <span class="text-sm">ユーザー名</span>
+      <input name="username" required class="w-full border rounded px-2 py-1">
+    </label>
+    <label class="block">
+      <span class="text-sm">パスワード</span>
+      <input name="password" type="password" required class="w-full border rounded px-2 py-1">
+    </label>
+    <button class="w-full bg-blue-600 text-white py-1.5 rounded hover:bg-blue-700">ログイン</button>
+  </form>
+  <p class="text-sm mt-4 text-center">
+    アカウントがない場合は<a href="{{ prefix }}/register" class="text-blue-600">登録</a>
+  </p>
+</div>
+{% endblock %}

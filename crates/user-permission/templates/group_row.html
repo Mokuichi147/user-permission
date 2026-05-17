@@ -1,0 +1,18 @@
+<tr id="group-row-{{ g.id }}" class="border-t">
+  <td class="px-3 py-2">{{ g.id }}</td>
+  <td class="px-3 py-2 font-semibold">
+    <a href="{{ prefix }}/groups/{{ g.id }}" class="text-blue-700 hover:underline">{{ g.name }}</a>
+    {% if g.is_admin %}<span class="ml-1 bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded">🔑 管理者</span>{% endif %}
+  </td>
+  <td class="px-3 py-2 text-slate-600">{{ g.description }}</td>
+  <td class="px-3 py-2 text-right whitespace-nowrap">
+    <a href="{{ prefix }}/groups/{{ g.id }}" class="text-blue-600 hover:underline">詳細</a>
+    {% if is_admin %}
+    <button class="text-red-600 hover:underline ml-2"
+      hx-delete="{{ prefix }}/groups/{{ g.id }}"
+      hx-target="#group-row-{{ g.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="グループ「{{ g.name }}」を削除しますか？">削除</button>
+    {% endif %}
+  </td>
+</tr>

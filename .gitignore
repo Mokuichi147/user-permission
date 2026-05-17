@@ -1,0 +1,9 @@
+# SQLite runtime files
+*.db
+*.db-shm
+*.db-wal
+*.key
+
+# Rust build artefacts
+/target/
+**/*.rs.bk
