@@ -254,3 +254,76 @@ async fn legacy_db_missing_is_admin_column() {
     // alice is the first user → automatically admin
     assert!(db.users().is_admin(alice.id, None).await.unwrap());
 }
+
+#[tokio::test]
+async fn local_backend_verifies_per_call_token() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db
+        .users()
+        .create("alice", "pw", "Alice", None)
+        .await
+        .unwrap();
+
+    // 有効な JWT を発行して渡せばアクセスできる
+    let token = db
+        .users()
+        .authenticate("alice", "pw", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token issued");
+    let fetched = db
+        .users()
+        .get_by_id(alice.id, Some(&token))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.id, alice.id);
+
+    // 不正な JWT はエラーになる
+    let err = db
+        .users()
+        .get_by_id(alice.id, Some("not-a-valid-jwt"))
+        .await
+        .unwrap_err();
+    // Error::Jwt(_) であること
+    let msg = err.to_string();
+    assert!(msg.contains("jwt"), "expected jwt error, got: {msg}");
+
+    // token: None は従来どおり通る
+    let fetched = db.users().get_by_id(alice.id, None).await.unwrap().unwrap();
+    assert_eq!(fetched.id, alice.id);
+}
+
+#[tokio::test]
+async fn local_backend_without_token_manager_rejects_token() {
+    // secret_path = None → TokenManager 未設定の local backend
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db = Database::open_local(&db_path, None::<&std::path::Path>)
+        .await
+        .unwrap();
+    let alice = db
+        .users()
+        .create("alice", "pw", "Alice", None)
+        .await
+        .unwrap();
+
+    // token を渡すと MissingTokenManager になる
+    let err = db
+        .users()
+        .get_by_id(alice.id, Some("anything"))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        user_permission_core::Error::MissingTokenManager
+    ));
+
+    // None なら従来通り通る
+    assert!(db
+        .users()
+        .get_by_id(alice.id, None)
+        .await
+        .unwrap()
+        .is_some());
+}

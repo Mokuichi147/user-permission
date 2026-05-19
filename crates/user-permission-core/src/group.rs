@@ -52,8 +52,11 @@ pub struct GroupManager {
 /// - `None` — fall back to the token stored internally via
 ///   [`Database::login`](crate::Database::login).
 ///
-/// For the local SQLite backend the argument is ignored (the local backend
-/// does not perform authorization checks here).
+/// For the local SQLite backend, `Some(t)` causes the token to be verified
+/// via the configured [`TokenManager`](crate::TokenManager) before the
+/// operation proceeds (`Error::MissingTokenManager` if none is configured,
+/// or a JWT error if verification fails); `None` skips verification and
+/// accesses SQLite directly.
 impl GroupManager {
     pub(crate) fn new(backend: Arc<Backend>) -> Self {
         Self { backend }
@@ -68,7 +71,7 @@ impl GroupManager {
     ) -> Result<Group> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let row = sqlx::query(
                     "INSERT INTO groups (name, description, is_admin) VALUES (?, ?, ?) RETURNING *",
                 )
@@ -108,7 +111,7 @@ impl GroupManager {
     pub async fn get_by_id(&self, group_id: i64, token: Option<&str>) -> Result<Option<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let row = sqlx::query("SELECT * FROM groups WHERE id = ?")
                     .bind(group_id)
                     .fetch_optional(&local.pool)
@@ -130,9 +133,9 @@ impl GroupManager {
     }
 
     pub async fn get_by_name(&self, name: &str, token: Option<&str>) -> Result<Option<Group>> {
-        let _ = token;
         match &*self.backend {
             Backend::Local(local) => {
+                local.verify_if_present(token)?;
                 let row = sqlx::query("SELECT * FROM groups WHERE name = ?")
                     .bind(name)
                     .fetch_optional(&local.pool)
@@ -148,7 +151,7 @@ impl GroupManager {
     pub async fn list_all(&self, token: Option<&str>) -> Result<Vec<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let rows = sqlx::query("SELECT * FROM groups ORDER BY id")
                     .fetch_all(&local.pool)
                     .await?;
@@ -164,8 +167,8 @@ impl GroupManager {
     }
 
     pub async fn list_admin_groups(&self, token: Option<&str>) -> Result<Vec<Group>> {
-        let _ = token;
         let local = self.backend.as_local()?;
+        local.verify_if_present(token)?;
         let rows = sqlx::query("SELECT * FROM groups WHERE is_admin = 1 ORDER BY id")
             .fetch_all(&local.pool)
             .await?;
@@ -180,6 +183,7 @@ impl GroupManager {
     ) -> Result<Option<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
+                local.verify_if_present(token)?;
                 let mut fields: Vec<&str> = Vec::new();
                 let mut params: Vec<Value> = Vec::new();
                 if let Some(n) = &update.name {
@@ -238,7 +242,7 @@ impl GroupManager {
     pub async fn delete(&self, group_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let res = sqlx::query("DELETE FROM groups WHERE id = ?")
                     .bind(group_id)
                     .execute(&local.pool)
@@ -262,7 +266,7 @@ impl GroupManager {
     pub async fn add_user(&self, group_id: i64, user_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let res = sqlx::query("INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)")
                     .bind(user_id)
                     .bind(group_id)
@@ -294,7 +298,7 @@ impl GroupManager {
     ) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let res = sqlx::query("DELETE FROM user_groups WHERE user_id = ? AND group_id = ?")
                     .bind(user_id)
                     .bind(group_id)
@@ -319,7 +323,7 @@ impl GroupManager {
     pub async fn get_members(&self, group_id: i64, token: Option<&str>) -> Result<Vec<User>> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let rows = sqlx::query(
                     "SELECT u.* FROM users u \
                      JOIN user_groups ug ON u.id = ug.user_id \
@@ -359,7 +363,7 @@ impl GroupManager {
     pub async fn get_user_groups(&self, user_id: i64, token: Option<&str>) -> Result<Vec<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let rows = sqlx::query(
                     "SELECT g.* FROM groups g \
                      JOIN user_groups ug ON g.id = ug.group_id \

@@ -26,6 +26,21 @@ pub(crate) struct LocalBackend {
     pub token_manager: Option<TokenManager>,
 }
 
+impl LocalBackend {
+    /// `token` が `Some` のときに JWT を検証する。`TokenManager` が未設定の場合は
+    /// `Error::MissingTokenManager` を返す。`None` の場合は何もせず `Ok(())`。
+    pub(crate) fn verify_if_present(&self, token: Option<&str>) -> Result<()> {
+        if let Some(t) = token {
+            let tm = self
+                .token_manager
+                .as_ref()
+                .ok_or(Error::MissingTokenManager)?;
+            tm.verify_token(t)?;
+        }
+        Ok(())
+    }
+}
+
 impl Database {
     /// Open a local SQLite database. If `secret_path` is provided, a `TokenManager` is
     /// initialised from that file (created if missing); otherwise calling
