@@ -54,8 +54,11 @@ pub struct UserManager {
 /// - `None` — fall back to the token stored internally via
 ///   [`Database::login`](crate::Database::login).
 ///
-/// For the local SQLite backend the argument is ignored (the local backend
-/// does not perform authorization checks here).
+/// For the local SQLite backend, `Some(t)` causes the token to be verified
+/// via the configured [`TokenManager`](crate::TokenManager) before the
+/// operation proceeds (`Error::MissingTokenManager` if none is configured,
+/// or a JWT error if verification fails); `None` skips verification and
+/// accesses SQLite directly.
 impl UserManager {
     pub(crate) fn new(backend: Arc<Backend>) -> Self {
         Self { backend }
@@ -70,6 +73,7 @@ impl UserManager {
     ) -> Result<User> {
         match &*self.backend {
             Backend::Local(local) => {
+                local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let hashed = hash(password)?;
 
@@ -144,7 +148,7 @@ impl UserManager {
     pub async fn get_by_id(&self, user_id: i64, token: Option<&str>) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let row = sqlx::query("SELECT * FROM users WHERE id = ?")
                     .bind(user_id)
                     .fetch_optional(&local.pool)
@@ -165,9 +169,9 @@ impl UserManager {
         username: &str,
         token: Option<&str>,
     ) -> Result<Option<User>> {
-        let _ = token;
         match &*self.backend {
             Backend::Local(local) => {
+                local.verify_if_present(token)?;
                 let row = sqlx::query("SELECT * FROM users WHERE username = ?")
                     .bind(username)
                     .fetch_optional(&local.pool)
@@ -183,7 +187,7 @@ impl UserManager {
     pub async fn list_all(&self, token: Option<&str>) -> Result<Vec<User>> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let rows = sqlx::query("SELECT * FROM users ORDER BY id")
                     .fetch_all(&local.pool)
                     .await?;
@@ -207,6 +211,7 @@ impl UserManager {
     ) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
+                local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let mut fields: Vec<&str> = Vec::new();
                 let mut params: Vec<Value> = Vec::new();
@@ -274,7 +279,7 @@ impl UserManager {
     pub async fn delete(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let res = sqlx::query("DELETE FROM users WHERE id = ?")
                     .bind(user_id)
                     .execute(&local.pool)
@@ -298,7 +303,7 @@ impl UserManager {
     pub async fn is_admin(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
-                let _ = token;
+                local.verify_if_present(token)?;
                 let row = sqlx::query(
                     "SELECT 1 AS one FROM user_groups ug \
                      JOIN groups g ON ug.group_id = g.id \
@@ -330,8 +335,8 @@ impl UserManager {
         is_admin: bool,
         token: Option<&str>,
     ) -> Result<bool> {
-        let _ = token;
         let local = self.backend.as_local()?;
+        local.verify_if_present(token)?;
         let pool = &local.pool;
         let mut tx = pool.begin().await?;
 
