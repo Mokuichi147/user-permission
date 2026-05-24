@@ -28,6 +28,11 @@ pub fn load_or_create_secret(path: impl AsRef<Path>) -> Result<String> {
         }
     }
     std::fs::write(&path, &secret)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(secret)
 }
 
@@ -156,5 +161,16 @@ mod tests {
         let second = load_or_create_secret(&path).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn secret_file_has_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        load_or_create_secret(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "secret.key should be 0600");
     }
 }
