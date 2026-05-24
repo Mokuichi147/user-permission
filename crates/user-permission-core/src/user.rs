@@ -178,9 +178,20 @@ impl UserManager {
                     .await?;
                 row.as_ref().map(User::from_row).transpose()
             }
-            Backend::Relay(_) => Err(Error::InvalidArgument(
-                "get_by_username is not supported over the relay backend".into(),
-            )),
+            Backend::Relay(relay) => {
+                let encoded: String =
+                    url::form_urlencoded::byte_serialize(username.as_bytes()).collect();
+                let bearer = relay.resolve_auth(token);
+                let users: Vec<User> = relay
+                    .request_json(
+                        "GET",
+                        &format!("/users?username={encoded}"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await?;
+                Ok(users.into_iter().next())
+            }
         }
     }
 

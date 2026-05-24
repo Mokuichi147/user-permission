@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -69,6 +69,12 @@ impl From<user_permission_core::Group> for GroupResponse {
             updated_at: g.updated_at,
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct UserListQuery {
+    #[serde(default)]
+    pub username: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -188,8 +194,18 @@ async fn create_user(
 async fn list_users(
     State(state): State<Arc<AppState>>,
     AuthUser(_): AuthUser,
+    Query(query): Query<UserListQuery>,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
-    let users = state.db.users().list_all(None).await?;
+    let users = match query.username {
+        Some(username) => state
+            .db
+            .users()
+            .get_by_username(&username, None)
+            .await?
+            .into_iter()
+            .collect(),
+        None => state.db.users().list_all(None).await?,
+    };
     let mut out = Vec::with_capacity(users.len());
     for u in users {
         let admin = state.db.users().is_admin(u.id, None).await?;

@@ -100,7 +100,7 @@ let db = Database::open_remote("http://localhost:8001").await?;
 | POST | `/token` | ログイン（トークン取得） | 不要 |
 | GET | `/me` | 現在のユーザー情報（`is_admin` を含む） | 必要 |
 | POST | `/users` | ユーザー作成 | 不要 |
-| GET | `/users` | ユーザー一覧 | 必要 |
+| GET | `/users` | ユーザー一覧（`?username=...` で username 完全一致検索） | 必要 |
 | GET | `/users/{id}` | ユーザー取得 | 必要 |
 | PATCH | `/users/{id}` | ユーザー更新 | 本人 or 管理者 |
 | DELETE | `/users/{id}` | ユーザー削除 | 本人 or 管理者 |
