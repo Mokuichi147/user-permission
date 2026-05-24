@@ -299,7 +299,7 @@ pub fn router(prefix: &str) -> Router<Arc<AppState>> {
         r = r.route(p, get(index)).route(&format!("{p}/"), get(index));
     }
     r.route(&join("login"), get(login_page).post(login_submit))
-        .route(&join("logout"), get(logout).post(logout))
+        .route(&join("logout"), post(logout))
         .route(&join("register"), get(register_page).post(register_submit))
         .route(&join("me"), get(me_page).post(me_update))
         .route(&join("me/password"), post(me_password))
