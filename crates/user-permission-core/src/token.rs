@@ -98,6 +98,36 @@ impl TokenManager {
         Ok(token)
     }
 
+    /// Issue a JWT representing a machine-to-machine service client. The token
+    /// carries `kind: "service"`, a non-numeric `sub` of `service:<client_id>`
+    /// (so it can never be resolved to a `User`), and a space-separated `scope`
+    /// claim. It is signed with the same master key but grants only the listed
+    /// read scopes — never `is_admin`.
+    pub fn create_service_token(
+        &self,
+        client_id: &str,
+        scopes: &[String],
+        expires_in: Duration,
+    ) -> Result<String> {
+        let now = Utc::now().timestamp();
+        let exp = now + expires_in.as_secs() as i64;
+
+        let mut payload = Map::new();
+        payload.insert("sub".into(), Value::String(format!("service:{client_id}")));
+        payload.insert("client_id".into(), Value::String(client_id.to_string()));
+        payload.insert("kind".into(), Value::String("service".into()));
+        payload.insert("scope".into(), Value::String(scopes.join(" ")));
+        payload.insert("iat".into(), Value::Number(now.into()));
+        payload.insert("exp".into(), Value::Number(exp.into()));
+
+        let token = encode(
+            &Header::new(self.algorithm),
+            &Value::Object(payload),
+            &EncodingKey::from_secret(self.secret.as_bytes()),
+        )?;
+        Ok(token)
+    }
+
     /// Returns the raw decoded claim map (matching PyJWT's `decode` behaviour).
     pub fn verify_token(&self, token: &str) -> Result<Map<String, Value>> {
         let mut validation = Validation::new(self.algorithm);

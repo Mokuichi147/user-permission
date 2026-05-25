@@ -24,11 +24,16 @@ mod error;
 mod group;
 pub mod password;
 mod relay;
+mod service_client;
 pub mod token;
 mod user;
 
 pub use database::Database;
 pub use error::{Error, Result};
 pub use group::{Group, GroupManager, GroupUpdate};
+pub use service_client::{
+    validate_scopes, ServiceClient, ServiceClientManager, ALL_SCOPES, SCOPE_GROUPS_READ,
+    SCOPE_USERS_READ,
+};
 pub use token::{load_or_create_secret, BaseClaims, TokenManager};
 pub use user::{User, UserManager, UserUpdate};
