@@ -8,6 +8,7 @@ use sqlx::{Row, SqlitePool};
 use crate::error::{Error, Result};
 use crate::group::GroupManager;
 use crate::relay::RelayBackend;
+use crate::service_client::ServiceClientManager;
 use crate::token::TokenManager;
 use crate::user::UserManager;
 
@@ -107,6 +108,10 @@ impl Database {
         GroupManager::new(self.backend.clone())
     }
 
+    pub fn service_clients(&self) -> ServiceClientManager {
+        ServiceClientManager::new(self.backend.clone())
+    }
+
     pub fn token_manager(&self) -> Result<&TokenManager> {
         match &*self.backend {
             Backend::Local(local) => local
@@ -123,6 +128,26 @@ impl Database {
             Backend::Relay(relay) => relay.login(username, password).await,
             Backend::Local(_) => Err(Error::InvalidArgument(
                 "login() is only valid for relay backends".into(),
+            )),
+        }
+    }
+
+    /// For relay backends, authenticate as a service via the client-credentials
+    /// grant and store the issued access token internally. The credentials are
+    /// also retained so the token can be transparently refreshed on a 401.
+    pub async fn login_client_credentials(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<String> {
+        match &*self.backend {
+            Backend::Relay(relay) => {
+                relay
+                    .login_client_credentials(client_id, client_secret)
+                    .await
+            }
+            Backend::Local(_) => Err(Error::InvalidArgument(
+                "login_client_credentials() is only valid for relay backends".into(),
             )),
         }
     }
@@ -156,6 +181,11 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             .execute(pool)
             .await?;
     }
+
+    // 0003 creates the service_clients table idempotently.
+    sqlx::query(include_str!("../migrations/0003_service_clients.sql"))
+        .execute(pool)
+        .await?;
 
     Ok(())
 }

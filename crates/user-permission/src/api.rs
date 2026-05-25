@@ -7,14 +7,25 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use user_permission_core::{GroupUpdate, User, UserUpdate};
 
-use crate::auth::{AdminUser, AuthUser};
+use crate::auth::{AdminUser, AuthUser, GroupsRead, UsersRead};
 use crate::error::ApiError;
 use crate::state::AppState;
 
+/// `POST /token` form. Supports two OAuth2-style grants:
+/// - `password` (default when `grant_type` is omitted): `username` + `password`.
+/// - `client_credentials`: `client_id` + `client_secret` for service clients.
 #[derive(Deserialize)]
-pub struct LoginForm {
-    pub username: String,
-    pub password: String,
+pub struct TokenForm {
+    #[serde(default)]
+    pub grant_type: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -122,6 +133,51 @@ pub struct GroupMember {
     pub user_id: i64,
 }
 
+#[derive(Deserialize)]
+pub struct ServiceClientCreate {
+    #[serde(default)]
+    pub name: String,
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ServiceClientResponse {
+    pub id: i64,
+    pub client_id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub is_active: bool,
+    pub expires_at: Option<String>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+impl From<user_permission_core::ServiceClient> for ServiceClientResponse {
+    fn from(c: user_permission_core::ServiceClient) -> Self {
+        Self {
+            id: c.id,
+            client_id: c.client_id,
+            name: c.name,
+            scopes: c.scopes,
+            is_active: c.is_active,
+            expires_at: c.expires_at,
+            created_at: c.created_at,
+            last_used_at: c.last_used_at,
+        }
+    }
+}
+
+/// Returned only at creation / rotation: includes the plaintext secret, which
+/// is never retrievable afterwards.
+#[derive(Serialize)]
+pub struct ServiceClientCreated {
+    #[serde(flatten)]
+    pub client: ServiceClientResponse,
+    pub client_secret: String,
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/token", post(login))
@@ -142,18 +198,57 @@ pub fn router() -> Router<Arc<AppState>> {
             post(add_member).get(list_members),
         )
         .route("/groups/:group_id/members/:user_id", delete(remove_member))
+        .route(
+            "/service-clients",
+            post(create_service_client).get(list_service_clients),
+        )
+        .route("/service-clients/:id", delete(delete_service_client))
+        .route(
+            "/service-clients/:id/rotate",
+            post(rotate_service_client_secret),
+        )
 }
 
 async fn login(
     State(state): State<Arc<AppState>>,
-    Form(form): Form<LoginForm>,
+    Form(form): Form<TokenForm>,
 ) -> Result<Json<TokenResponse>, ApiError> {
-    let token = state
-        .db
-        .users()
-        .authenticate(&form.username, &form.password, state.config.token_expires)
-        .await?
-        .ok_or_else(|| ApiError::unauthorized("Invalid username or password"))?;
+    let token = match form.grant_type.as_deref() {
+        Some("client_credentials") => {
+            let client_id = form
+                .client_id
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "client_id is required"))?;
+            let client_secret = form.client_secret.ok_or_else(|| {
+                ApiError::new(StatusCode::BAD_REQUEST, "client_secret is required")
+            })?;
+            state
+                .db
+                .service_clients()
+                .authenticate(&client_id, &client_secret, state.config.token_expires)
+                .await?
+                .ok_or_else(|| ApiError::unauthorized("Invalid client credentials"))?
+        }
+        Some("password") | None => {
+            let username = form
+                .username
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "username is required"))?;
+            let password = form
+                .password
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "password is required"))?;
+            state
+                .db
+                .users()
+                .authenticate(&username, &password, state.config.token_expires)
+                .await?
+                .ok_or_else(|| ApiError::unauthorized("Invalid username or password"))?
+        }
+        Some(other) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("unsupported grant_type: {other}"),
+            ));
+        }
+    };
     Ok(Json(TokenResponse {
         access_token: token,
         token_type: "bearer",
@@ -193,7 +288,7 @@ async fn create_user(
 
 async fn list_users(
     State(state): State<Arc<AppState>>,
-    AuthUser(_): AuthUser,
+    UsersRead(_): UsersRead,
     Query(query): Query<UserListQuery>,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let users = match query.username {
@@ -217,7 +312,7 @@ async fn list_users(
 async fn get_user(
     State(state): State<Arc<AppState>>,
     Path(user_id): Path<i64>,
-    AuthUser(_): AuthUser,
+    UsersRead(_): UsersRead,
 ) -> Result<Json<UserResponse>, ApiError> {
     let user = state
         .db
@@ -289,7 +384,7 @@ async fn delete_user(
 async fn list_user_groups(
     State(state): State<Arc<AppState>>,
     Path(user_id): Path<i64>,
-    AuthUser(_): AuthUser,
+    UsersRead(_): UsersRead,
 ) -> Result<Json<Vec<GroupResponse>>, ApiError> {
     let groups = state.db.groups().get_user_groups(user_id, None).await?;
     Ok(Json(groups.into_iter().map(Into::into).collect()))
@@ -317,7 +412,7 @@ async fn create_group(
 
 async fn list_groups(
     State(state): State<Arc<AppState>>,
-    AuthUser(_): AuthUser,
+    GroupsRead(_): GroupsRead,
 ) -> Result<Json<Vec<GroupResponse>>, ApiError> {
     let groups = state.db.groups().list_all(None).await?;
     Ok(Json(groups.into_iter().map(Into::into).collect()))
@@ -326,7 +421,7 @@ async fn list_groups(
 async fn get_group(
     State(state): State<Arc<AppState>>,
     Path(group_id): Path<i64>,
-    AuthUser(_): AuthUser,
+    GroupsRead(_): GroupsRead,
 ) -> Result<Json<GroupResponse>, ApiError> {
     let group = state
         .db
@@ -413,7 +508,7 @@ async fn remove_member(
 async fn list_members(
     State(state): State<Arc<AppState>>,
     Path(group_id): Path<i64>,
-    AuthUser(_): AuthUser,
+    GroupsRead(_): GroupsRead,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let members = state.db.groups().get_members(group_id, None).await?;
     let mut out = Vec::with_capacity(members.len());
@@ -422,4 +517,59 @@ async fn list_members(
         out.push(UserResponse::from_user(m, admin));
     }
     Ok(Json(out))
+}
+
+async fn create_service_client(
+    State(state): State<Arc<AppState>>,
+    AdminUser(_): AdminUser,
+    Json(body): Json<ServiceClientCreate>,
+) -> Result<(StatusCode, Json<ServiceClientCreated>), ApiError> {
+    let (client, secret) = state
+        .db
+        .service_clients()
+        .create(&body.name, &body.scopes, body.expires_at.as_deref())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ServiceClientCreated {
+            client: client.into(),
+            client_secret: secret,
+        }),
+    ))
+}
+
+async fn list_service_clients(
+    State(state): State<Arc<AppState>>,
+    AdminUser(_): AdminUser,
+) -> Result<Json<Vec<ServiceClientResponse>>, ApiError> {
+    let clients = state.db.service_clients().list().await?;
+    Ok(Json(clients.into_iter().map(Into::into).collect()))
+}
+
+async fn delete_service_client(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    AdminUser(_): AdminUser,
+) -> Result<StatusCode, ApiError> {
+    if !state.db.service_clients().delete(id).await? {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "Service client not found",
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rotate_service_client_secret(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    AdminUser(_): AdminUser,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let secret = state
+        .db
+        .service_clients()
+        .rotate_secret(id)
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Service client not found"))?;
+    Ok(Json(serde_json::json!({ "client_secret": secret })))
 }

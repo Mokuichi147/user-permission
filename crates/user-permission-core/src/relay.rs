@@ -9,6 +9,9 @@ pub(crate) struct RelayBackend {
     client: reqwest::Client,
     base_url: String,
     token: RwLock<Option<String>>,
+    /// Stored client-credentials, set by `login_client_credentials`, used to
+    /// transparently re-issue the access token when a request gets a 401.
+    client_creds: RwLock<Option<(String, String)>>,
 }
 
 impl RelayBackend {
@@ -20,6 +23,7 @@ impl RelayBackend {
             client: reqwest::Client::builder().build()?,
             base_url,
             token: RwLock::new(None),
+            client_creds: RwLock::new(None),
         })
     }
 
@@ -30,6 +34,10 @@ impl RelayBackend {
 
     fn current_token(&self) -> Option<String> {
         self.token.read().ok().and_then(|g| g.clone())
+    }
+
+    fn current_creds(&self) -> Option<(String, String)> {
+        self.client_creds.read().ok().and_then(|g| g.clone())
     }
 
     /// Resolve which bearer token to use for a request: prefer the per-call
@@ -66,6 +74,50 @@ impl RelayBackend {
             .to_string();
         self.set_token(Some(token.clone()));
         Ok(token)
+    }
+
+    /// Authenticate as a service via the OAuth2 client-credentials grant. The
+    /// issued access token is stored, and the credentials are retained so the
+    /// token can be refreshed transparently when a later request returns 401.
+    pub(crate) async fn login_client_credentials(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<String> {
+        let token = self.fetch_client_token(client_id, client_secret).await?;
+        self.set_token(Some(token.clone()));
+        *self
+            .client_creds
+            .write()
+            .expect("relay creds lock poisoned") = Some((client_id.into(), client_secret.into()));
+        Ok(token)
+    }
+
+    async fn fetch_client_token(&self, client_id: &str, client_secret: &str) -> Result<String> {
+        let url = format!("{}/token", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Relay { status, body });
+        }
+        let body: Value = resp.json().await?;
+        body.get("access_token")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| Error::Relay {
+                status: 200,
+                body: "no access_token in response".into(),
+            })
     }
 
     /// Execute a JSON request and decode the response as `T`. If `auth` is
@@ -134,6 +186,34 @@ impl RelayBackend {
     }
 
     async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        auth: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let resp = self.send_once(method, path, body.clone(), auth).await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+        // Only refresh when the request used the internally stored token (not a
+        // per-call override) and we hold client credentials.
+        let used_stored = match auth {
+            Some(a) => Some(a.to_string()) == self.current_token(),
+            None => true,
+        };
+        if !used_stored {
+            return Ok(resp);
+        }
+        let Some((client_id, secret)) = self.current_creds() else {
+            return Ok(resp);
+        };
+        let token = self.fetch_client_token(&client_id, &secret).await?;
+        self.set_token(Some(token.clone()));
+        self.send_once(method, path, body, Some(&token)).await
+    }
+
+    async fn send_once(
         &self,
         method: &str,
         path: &str,
