@@ -10,7 +10,8 @@ use crate::group::GroupManager;
 use crate::relay::RelayBackend;
 use crate::service_client::ServiceClientManager;
 use crate::token::TokenManager;
-use crate::user::UserManager;
+use crate::user::{User, UserManager};
+use serde_json::Value;
 
 #[derive(Clone)]
 pub struct Database {
@@ -43,6 +44,38 @@ impl LocalBackend {
 }
 
 impl Database {
+    /// Open a backend from a single target string, dispatching on its form:
+    ///
+    /// - looks like a URL (contains `://`) → relay backend. The scheme must be
+    ///   `http` or `https`, otherwise [`Error::InvalidArgument`] is returned
+    ///   (this guards against a mistyped URL silently becoming a file path).
+    ///   Passing a `secret` with a relay target is rejected, since the central
+    ///   server holds the signing key.
+    /// - anything else → local SQLite file at that path, with `secret` used as
+    ///   the JWT secret path (or `None` for no token manager).
+    ///
+    /// [`open_local`](Self::open_local) / [`open_relay`](Self::open_relay) remain
+    /// available when the backend is known up front.
+    pub async fn open(target: &str, secret: Option<&str>) -> Result<Self> {
+        if target.contains("://") {
+            let url = url::Url::parse(target)?;
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(Error::InvalidArgument(format!(
+                    "unsupported URL scheme '{}': relay backend requires http or https",
+                    url.scheme()
+                )));
+            }
+            if secret.is_some() {
+                return Err(Error::InvalidArgument(
+                    "secret is not applicable to a relay (URL) backend".into(),
+                ));
+            }
+            Self::open_relay(target)
+        } else {
+            Self::open_local(target, secret).await
+        }
+    }
+
     /// Open a local SQLite database. If `secret_path` is provided, a `TokenManager` is
     /// initialised from that file (created if missing); otherwise calling
     /// `token_manager()` returns `Error::MissingTokenManager`.
@@ -150,6 +183,78 @@ impl Database {
                 "login_client_credentials() is only valid for relay backends".into(),
             )),
         }
+    }
+
+    /// Resolve a bearer token to its owning [`User`], backend-agnostically.
+    ///
+    /// - local: verifies the JWT signature and expiry with the configured
+    ///   [`TokenManager`], then loads the user named by the `sub` claim.
+    /// - relay: delegates to the server via `GET /me`, which performs the same
+    ///   validation server-side.
+    ///
+    /// Returns `Ok(None)` for an invalid, expired, or non-user (service) token
+    /// in both cases. Local without a token manager yields
+    /// [`Error::MissingTokenManager`].
+    pub async fn verify_token_and_get_user(&self, token: &str) -> Result<Option<User>> {
+        match &*self.backend {
+            Backend::Local(local) => {
+                let tm = local
+                    .token_manager
+                    .as_ref()
+                    .ok_or(Error::MissingTokenManager)?;
+                let claims = match tm.verify_token(token) {
+                    Ok(c) => c,
+                    Err(_) => return Ok(None),
+                };
+                let user_id = claims
+                    .get("sub")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<i64>().ok());
+                match user_id {
+                    Some(id) => self.users().get_by_id(id, None).await,
+                    None => Ok(None),
+                }
+            }
+            Backend::Relay(relay) => relay.me::<User>(token).await,
+        }
+    }
+
+    /// Ensure an admin user exists (local backend only).
+    ///
+    /// If any admin already exists, this is a no-op returning `Ok(None)`.
+    /// Otherwise the named user is created if missing, then promoted to admin,
+    /// and returned as `Ok(Some(user))`. For relay backends this always returns
+    /// `Ok(None)`: the central server owns admin provisioning, so a client must
+    /// never bootstrap one.
+    pub async fn bootstrap_admin_if_needed(
+        &self,
+        username: &str,
+        password: &str,
+        display_name: &str,
+    ) -> Result<Option<User>> {
+        let local = match &*self.backend {
+            Backend::Local(local) => local,
+            Backend::Relay(_) => return Ok(None),
+        };
+
+        let admin_exists: Option<(i64,)> = sqlx::query_as(
+            "SELECT ug.user_id FROM user_groups ug \
+             JOIN groups g ON ug.group_id = g.id \
+             WHERE g.is_admin = 1 LIMIT 1",
+        )
+        .fetch_optional(&local.pool)
+        .await?;
+        if admin_exists.is_some() {
+            return Ok(None);
+        }
+
+        let users = self.users();
+        let user = match users.get_by_username(username, None).await? {
+            Some(u) => u,
+            None => users.create(username, password, display_name, None).await?,
+        };
+        users.set_admin(user.id, true, None).await?;
+        Ok(Some(user))
     }
 
     pub fn is_local(&self) -> bool {
