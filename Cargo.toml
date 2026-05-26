@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -15,8 +15,8 @@ repository = "https://github.com/mokuichi147/user-permission"
 homepage = "https://github.com/mokuichi147/user-permission"
 
 [workspace.dependencies]
-user-permission-core = { path = "crates/user-permission-core", version = "0.2.4" }
-user-permission = { path = "crates/user-permission", version = "0.2.4" }
+user-permission-core = { path = "crates/user-permission-core", version = "0.2.5" }
+user-permission = { path = "crates/user-permission", version = "0.2.5" }
 
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "net", "signal"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "chrono"] }
