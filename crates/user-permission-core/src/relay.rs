@@ -141,6 +141,22 @@ impl RelayBackend {
         Ok(resp.json().await?)
     }
 
+    /// Fetch the user represented by `token` via `GET /me`. Returns `Ok(None)`
+    /// when the token is rejected (401), mirroring the local backend which
+    /// returns `None` for an invalid/expired token rather than erroring.
+    pub(crate) async fn me<T: DeserializeOwned>(&self, token: &str) -> Result<Option<T>> {
+        let resp = self.send("GET", "/me", None, Some(token)).await?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Relay { status, body });
+        }
+        Ok(Some(resp.json().await?))
+    }
+
     /// Like `request_json` but returns `Ok(None)` on 404.
     pub(crate) async fn request_json_opt<T: DeserializeOwned>(
         &self,

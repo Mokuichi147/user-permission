@@ -141,6 +141,7 @@ impl UserManager {
                 relay
                     .request_json("POST", "/users", Some(body), bearer.as_deref())
                     .await
+                    .map_err(map_relay_conflict)
             }
         }
     }
@@ -433,11 +434,24 @@ impl UserManager {
                 )?;
                 Ok(Some(token))
             }
-            Backend::Relay(relay) => {
-                let token = relay.login(username, password).await?;
-                Ok(Some(token))
-            }
+            Backend::Relay(relay) => match relay.login(username, password).await {
+                Ok(token) => Ok(Some(token)),
+                // Invalid credentials surface as 401 on the relay; map to `None`
+                // so both backends report a failed login the same way.
+                Err(Error::Relay { status: 401, .. }) => Ok(None),
+                Err(e) => Err(e),
+            },
         }
+    }
+}
+
+/// Map a relay `409 Conflict` response onto [`Error::Conflict`] so a duplicate
+/// username raises the same error variant as the local backend (and is caught
+/// by [`Error::is_unique_violation`]).
+fn map_relay_conflict(err: Error) -> Error {
+    match err {
+        Error::Relay { status: 409, body } => Error::Conflict(body),
+        other => other,
     }
 }
 
