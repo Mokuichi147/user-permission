@@ -28,7 +28,11 @@ async fn relay_get_by_username_resolves_user() {
     let (base_url, _dir) = spawn_server().await;
 
     let relay = Database::open_relay(&base_url).unwrap();
-    relay.login("alice", "pw").await.unwrap();
+    relay
+        .login("alice", "pw", std::time::Duration::from_secs(3600))
+        .await
+        .unwrap()
+        .expect("login should succeed");
 
     let found = relay
         .users()

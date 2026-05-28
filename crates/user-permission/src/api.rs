@@ -224,8 +224,7 @@ async fn login(
             })?;
             state
                 .db
-                .service_clients()
-                .authenticate(&client_id, &client_secret, state.config.token_expires)
+                .login_service(&client_id, &client_secret, state.config.token_expires)
                 .await?
                 .ok_or_else(|| ApiError::unauthorized("Invalid client credentials"))?
         }
@@ -238,8 +237,7 @@ async fn login(
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "password is required"))?;
             state
                 .db
-                .users()
-                .authenticate(&username, &password, state.config.token_expires)
+                .login(&username, &password, state.config.token_expires)
                 .await?
                 .ok_or_else(|| ApiError::unauthorized("Invalid username or password"))?
         }

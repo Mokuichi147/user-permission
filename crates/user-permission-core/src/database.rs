@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use jsonwebtoken::Algorithm;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -159,34 +160,41 @@ impl Database {
         ServiceClientManager::new(self.backend.clone())
     }
 
-    /// For relay backends, log in and store the access token internally.
-    pub async fn login(&self, username: &str, password: &str) -> Result<String> {
-        match &*self.backend {
-            Backend::Relay(relay) => relay.login(username, password).await,
-            Backend::Local(_) => Err(Error::InvalidArgument(
-                "login() is only valid for relay backends".into(),
-            )),
-        }
+    /// Log in with a username and password, returning a freshly issued access
+    /// token (or `None` if the credentials are rejected).
+    ///
+    /// - local: verifies the password and signs a JWT. `expires_in` sets the
+    ///   token lifetime.
+    /// - relay: delegates to the central server's `POST /token` and stores the
+    ///   returned token internally for subsequent requests. `expires_in` is
+    ///   ignored — the server owns the token lifetime.
+    pub async fn login(
+        &self,
+        username: &str,
+        password: &str,
+        expires_in: Duration,
+    ) -> Result<Option<String>> {
+        self.users().login(username, password, expires_in).await
     }
 
-    /// For relay backends, authenticate as a service via the client-credentials
-    /// grant and store the issued access token internally. The credentials are
-    /// also retained so the token can be transparently refreshed on a 401.
-    pub async fn login_client_credentials(
+    /// Log in as a machine-to-machine service via the client-credentials grant,
+    /// returning a short-lived scoped access token (or `None` if the client is
+    /// unknown, inactive, expired, or the secret does not match).
+    ///
+    /// - local: verifies the secret and signs a scoped JWT. `expires_in` sets
+    ///   the token lifetime.
+    /// - relay: delegates to the central server's `POST /token` and stores the
+    ///   token (plus the credentials, for transparent refresh on a 401)
+    ///   internally. `expires_in` is ignored — the server owns the lifetime.
+    pub async fn login_service(
         &self,
         client_id: &str,
         client_secret: &str,
-    ) -> Result<String> {
-        match &*self.backend {
-            Backend::Relay(relay) => {
-                relay
-                    .login_client_credentials(client_id, client_secret)
-                    .await
-            }
-            Backend::Local(_) => Err(Error::InvalidArgument(
-                "login_client_credentials() is only valid for relay backends".into(),
-            )),
-        }
+        expires_in: Duration,
+    ) -> Result<Option<String>> {
+        self.service_clients()
+            .login(client_id, client_secret, expires_in)
+            .await
     }
 
     /// Resolve a bearer token to its owning [`User`], backend-agnostically.

@@ -33,7 +33,11 @@ async fn relay_introspect_classifies_principals() {
     let relay = Database::open_relay(&base_url).unwrap();
 
     // A user token resolves to Principal::User over the relay.
-    let user_token = relay.login("alice", "pw").await.unwrap();
+    let user_token = relay
+        .login("alice", "pw", std::time::Duration::from_secs(3600))
+        .await
+        .unwrap()
+        .expect("user login should succeed");
     match relay.resolve_principal(&user_token).await.unwrap() {
         Some(Principal::User(user)) => assert_eq!(user.username, "alice"),
         other => panic!("expected a user principal, got {other:?}"),
@@ -41,9 +45,10 @@ async fn relay_introspect_classifies_principals() {
 
     // A service token resolves to Principal::Service with its granted scopes.
     let svc_token = relay
-        .login_client_credentials(&client_id, &client_secret)
+        .login_service(&client_id, &client_secret, std::time::Duration::from_secs(3600))
         .await
-        .unwrap();
+        .unwrap()
+        .expect("service login should succeed");
     match relay.resolve_principal(&svc_token).await.unwrap() {
         Some(Principal::Service { client_id: cid, scopes }) => {
             assert_eq!(cid, client_id);

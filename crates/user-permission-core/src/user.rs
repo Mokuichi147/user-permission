@@ -398,8 +398,15 @@ impl UserManager {
         Ok(true)
     }
 
-    /// Verify credentials and return a freshly issued JWT (local backend only).
-    pub async fn authenticate(
+    /// Log in with a username and password, returning a freshly issued access
+    /// token (or `None` if the credentials are rejected).
+    ///
+    /// - local: verifies the password and signs a JWT with the configured
+    ///   token manager. `expires_in` sets the token lifetime.
+    /// - relay: delegates to the central server's `POST /token` and stores the
+    ///   returned token internally for subsequent requests. `expires_in` is
+    ///   ignored — the server owns the token lifetime.
+    pub(crate) async fn login(
         &self,
         username: &str,
         password: &str,

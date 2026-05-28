@@ -31,8 +31,7 @@ async fn main() -> user_permission_core::Result<()> {
 
     let alice = db.users().create("alice", "password123", "Alice").await?;
     let token = db
-        .users()
-        .authenticate("alice", "password123", Duration::from_secs(3600))
+        .login("alice", "password123", Duration::from_secs(3600))
         .await?
         .expect("credentials");
     println!("token = {token}");

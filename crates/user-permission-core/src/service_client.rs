@@ -67,10 +67,10 @@ fn random_hex(bytes: usize) -> String {
     buf.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Manager for machine-to-machine service clients. Local backend only: clients
-/// are administered directly against SQLite (the relay backend authenticates
-/// with an already-issued credential via
-/// [`Database::login_client_credentials`](crate::Database::login_client_credentials)).
+/// Manager for machine-to-machine service clients. Administration (create,
+/// list, delete, rotate) is local-only — clients live in SQLite — while
+/// [`login`](Self::login) works on both backends: local signs a scoped JWT,
+/// relay obtains one from the central server via the client-credentials grant.
 pub struct ServiceClientManager {
     backend: Arc<Backend>,
 }
@@ -157,16 +157,33 @@ impl ServiceClientManager {
         Ok(Some(secret))
     }
 
-    /// Verify a client_id/secret pair and, on success, issue a short-lived
-    /// scoped service JWT. Returns `None` if the client is unknown, inactive,
-    /// expired, or the secret does not match.
-    pub async fn authenticate(
+    /// Log in as a machine-to-machine service via the client-credentials grant,
+    /// returning a short-lived scoped access token (or `None` if the client is
+    /// unknown, inactive, expired, or the secret does not match).
+    ///
+    /// - local: verifies the secret and signs a scoped JWT. `expires_in` sets
+    ///   the token lifetime.
+    /// - relay: delegates to the central server's `POST /token` and stores the
+    ///   token (plus the credentials, for transparent refresh on a 401)
+    ///   internally. `expires_in` is ignored — the server owns the lifetime.
+    pub(crate) async fn login(
         &self,
         client_id: &str,
         secret: &str,
         expires_in: Duration,
     ) -> Result<Option<String>> {
-        let local = self.backend.as_local()?;
+        let local = match &*self.backend {
+            Backend::Local(local) => local,
+            Backend::Relay(relay) => {
+                return match relay.login_client_credentials(client_id, secret).await {
+                    Ok(token) => Ok(Some(token)),
+                    // Invalid credentials surface as 401 on the relay; map to
+                    // `None` so both backends report a failed login the same way.
+                    Err(Error::Relay { status: 401, .. }) => Ok(None),
+                    Err(e) => Err(e),
+                };
+            }
+        };
         let token_manager = local
             .token_manager
             .as_ref()

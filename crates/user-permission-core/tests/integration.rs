@@ -97,8 +97,7 @@ async fn authenticate_and_verify() {
     let (db, _dir) = open_test_db().await;
     db.users().create("alice", "pw", "", None).await.unwrap();
     let token = db
-        .users()
-        .authenticate("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
@@ -113,14 +112,12 @@ async fn authenticate_and_verify() {
     );
 
     assert!(db
-        .users()
-        .authenticate("alice", "wrong", Duration::from_secs(60))
+        .login("alice", "wrong", Duration::from_secs(60))
         .await
         .unwrap()
         .is_none());
     assert!(db
-        .users()
-        .authenticate("nobody", "pw", Duration::from_secs(60))
+        .login("nobody", "pw", Duration::from_secs(60))
         .await
         .unwrap()
         .is_none());
@@ -269,8 +266,7 @@ async fn local_backend_verifies_per_call_token() {
 
     // 有効な JWT を発行して渡せばアクセスできる
     let token = db
-        .users()
-        .authenticate("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token issued");

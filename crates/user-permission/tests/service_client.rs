@@ -201,7 +201,11 @@ async fn relay_uses_client_credentials() {
     // A downstream service authenticates with client credentials and reads the
     // user directory through the relay backend.
     let relay = Database::open_relay(&base).unwrap();
-    relay.login_client_credentials(&cid, &secret).await.unwrap();
+    relay
+        .login_service(&cid, &secret, std::time::Duration::from_secs(3600))
+        .await
+        .unwrap()
+        .expect("service login should succeed");
 
     let bob = relay
         .users()
