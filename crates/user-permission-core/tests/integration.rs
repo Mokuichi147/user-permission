@@ -102,12 +102,15 @@ async fn authenticate_and_verify() {
         .await
         .unwrap()
         .expect("token");
-    let claims = db.token_manager().unwrap().verify_token(&token).unwrap();
-    assert_eq!(
-        claims["username"],
-        serde_json::Value::String("alice".into())
+    let principal = db.resolve_principal(&token).await.unwrap().expect("principal");
+    let user_permission_core::Principal::User(user) = principal else {
+        panic!("expected a user principal");
+    };
+    assert_eq!(user.username, "alice");
+    assert!(
+        db.users().is_admin(user.id, None).await.unwrap(),
+        "first user is admin"
     );
-    assert_eq!(claims["is_admin"], serde_json::Value::Bool(true)); // first user is admin
 
     assert!(db
         .users()

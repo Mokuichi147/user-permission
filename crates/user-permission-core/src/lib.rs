@@ -28,7 +28,7 @@ mod service_client;
 pub mod token;
 mod user;
 
-pub use database::Database;
+pub use database::{Database, Principal};
 pub use error::{Error, Result};
 pub use group::{Group, GroupManager, GroupUpdate};
 pub use service_client::{

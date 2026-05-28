@@ -90,7 +90,7 @@ use user_permission_core::Database;
 let db = Database::open_local("app.db", Some("secret.key")).await?;
 
 // URL → リモートサーバーへ HTTP 中継
-let db = Database::open_remote("http://localhost:8001").await?;
+let db = Database::open_relay("http://localhost:8001")?;
 ```
 
 ## REST API

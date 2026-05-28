@@ -3,6 +3,7 @@ use std::sync::RwLock;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::database::Principal;
 use crate::error::{Error, Result};
 
 pub(crate) struct RelayBackend {
@@ -141,11 +142,11 @@ impl RelayBackend {
         Ok(resp.json().await?)
     }
 
-    /// Fetch the user represented by `token` via `GET /me`. Returns `Ok(None)`
-    /// when the token is rejected (401), mirroring the local backend which
-    /// returns `None` for an invalid/expired token rather than erroring.
-    pub(crate) async fn me<T: DeserializeOwned>(&self, token: &str) -> Result<Option<T>> {
-        let resp = self.send("GET", "/me", None, Some(token)).await?;
+    /// Resolve `token` to its [`Principal`] via `POST /introspect`. Returns
+    /// `Ok(None)` when the token is rejected (401), mirroring the local backend
+    /// which returns `None` for an invalid/expired token rather than erroring.
+    pub(crate) async fn introspect(&self, token: &str) -> Result<Option<Principal>> {
+        let resp = self.send("POST", "/introspect", None, Some(token)).await?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Ok(None);
         }

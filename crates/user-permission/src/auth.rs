@@ -2,9 +2,8 @@ use axum::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
-use serde_json::{Map, Value};
 use std::sync::Arc;
-use user_permission_core::{User, SCOPE_GROUPS_READ, SCOPE_USERS_READ};
+use user_permission_core::{Principal, User, SCOPE_GROUPS_READ, SCOPE_USERS_READ};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -16,16 +15,6 @@ pub struct AuthUser(pub User);
 
 /// Like `AuthUser` but additionally enforces that the user is in an admin group.
 pub struct AdminUser(pub User);
-
-/// The authenticated caller: either a human `User` or a scoped service client.
-pub enum Principal {
-    User(User),
-    Service {
-        #[allow(dead_code)]
-        client_id: String,
-        scopes: Vec<String>,
-    },
-}
 
 /// Read access to the user directory: any authenticated user, or a service
 /// client holding the `users:read` scope.
@@ -59,72 +48,25 @@ fn extract_token(parts: &Parts) -> Option<String> {
     None
 }
 
-fn decode_claims(state: &Arc<AppState>, token: &str) -> Result<Map<String, Value>, ApiError> {
+/// Resolve the bearer token to a [`Principal`], backend-agnostically. An
+/// invalid or expired token maps to 401; a backend error maps to 500.
+async fn resolve_principal(state: &Arc<AppState>, token: &str) -> Result<Principal, ApiError> {
     state
         .db
-        .token_manager()
-        .map_err(|_| ApiError::unauthorized("token manager not configured"))?
-        .verify_token(token)
-        .map_err(|_| ApiError::unauthorized("invalid or expired token"))
-}
-
-fn is_service_claims(claims: &Map<String, Value>) -> bool {
-    claims.get("kind").and_then(Value::as_str) == Some("service")
-}
-
-async fn user_from_claims(
-    state: &Arc<AppState>,
-    claims: &Map<String, Value>,
-) -> Result<User, ApiError> {
-    let sub = claims
-        .get("sub")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ApiError::unauthorized("malformed token"))?;
-    let user_id: i64 = sub
-        .parse()
-        .map_err(|_| ApiError::unauthorized("malformed token sub"))?;
-    let user = state
-        .db
-        .users()
-        .get_by_id(user_id, None)
+        .resolve_principal(token)
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("user not found"))?;
-    if !user.is_active {
-        return Err(ApiError::unauthorized("user inactive"));
-    }
-    Ok(user)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::unauthorized("invalid or expired token"))
 }
 
+/// Resolve the bearer token to the backing [`User`], rejecting service tokens.
 async fn resolve_user(state: &Arc<AppState>, token: &str) -> Result<User, ApiError> {
-    let claims = decode_claims(state, token)?;
-    if is_service_claims(&claims) {
-        return Err(ApiError::new(
+    match resolve_principal(state, token).await? {
+        Principal::User(user) => Ok(user),
+        Principal::Service { .. } => Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "service token cannot act as a user",
-        ));
-    }
-    user_from_claims(state, &claims).await
-}
-
-async fn resolve_principal(state: &Arc<AppState>, token: &str) -> Result<Principal, ApiError> {
-    let claims = decode_claims(state, token)?;
-    if is_service_claims(&claims) {
-        let client_id = claims
-            .get("client_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let scopes = claims
-            .get("scope")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        Ok(Principal::Service { client_id, scopes })
-    } else {
-        Ok(Principal::User(user_from_claims(state, &claims).await?))
+        )),
     }
 }
 
