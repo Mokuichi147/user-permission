@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use axum::extract::{Form, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use user_permission_core::{GroupUpdate, User, UserUpdate};
+use user_permission_core::{GroupUpdate, Principal, User, UserUpdate};
 
 use crate::auth::{AdminUser, AuthUser, GroupsRead, UsersRead};
 use crate::error::ApiError;
@@ -181,6 +181,7 @@ pub struct ServiceClientCreated {
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/token", post(login))
+        .route("/introspect", post(introspect))
         .route("/me", get(me))
         .route("/users", post(create_user).get(list_users))
         .route(
@@ -223,8 +224,7 @@ async fn login(
             })?;
             state
                 .db
-                .service_clients()
-                .authenticate(&client_id, &client_secret, state.config.token_expires)
+                .login_service(&client_id, &client_secret, state.config.token_expires)
                 .await?
                 .ok_or_else(|| ApiError::unauthorized("Invalid client credentials"))?
         }
@@ -237,8 +237,7 @@ async fn login(
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "password is required"))?;
             state
                 .db
-                .users()
-                .authenticate(&username, &password, state.config.token_expires)
+                .login(&username, &password, state.config.token_expires)
                 .await?
                 .ok_or_else(|| ApiError::unauthorized("Invalid username or password"))?
         }
@@ -253,6 +252,26 @@ async fn login(
         access_token: token,
         token_type: "bearer",
     }))
+}
+
+/// Resolve the bearer token to its [`Principal`] (user or service client).
+/// Used by relay backends to delegate token classification to this server.
+async fn introspect(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Principal>, ApiError> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim)
+        .ok_or_else(|| ApiError::unauthorized("missing token"))?;
+    let principal = state
+        .db
+        .resolve_principal(token)
+        .await?
+        .ok_or_else(|| ApiError::unauthorized("invalid or expired token"))?;
+    Ok(Json(principal))
 }
 
 async fn me(

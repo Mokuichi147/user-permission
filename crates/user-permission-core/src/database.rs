@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use jsonwebtoken::Algorithm;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -11,7 +12,21 @@ use crate::relay::RelayBackend;
 use crate::service_client::ServiceClientManager;
 use crate::token::TokenManager;
 use crate::user::{User, UserManager};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// The authenticated caller behind a token, resolved backend-agnostically by
+/// [`Database::resolve_principal`]: either a human [`User`] or a scoped
+/// machine-to-machine service client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Principal {
+    User(User),
+    Service {
+        client_id: String,
+        scopes: Vec<String>,
+    },
+}
 
 #[derive(Clone)]
 pub struct Database {
@@ -145,57 +160,67 @@ impl Database {
         ServiceClientManager::new(self.backend.clone())
     }
 
-    pub fn token_manager(&self) -> Result<&TokenManager> {
-        match &*self.backend {
-            Backend::Local(local) => local
-                .token_manager
-                .as_ref()
-                .ok_or(Error::MissingTokenManager),
-            Backend::Relay(_) => Err(Error::MissingTokenManager),
-        }
+    /// Log in with a username and password, returning a freshly issued access
+    /// token (or `None` if the credentials are rejected).
+    ///
+    /// - local: verifies the password and signs a JWT. `expires_in` sets the
+    ///   token lifetime.
+    /// - relay: delegates to the central server's `POST /token` and stores the
+    ///   returned token internally for subsequent requests. `expires_in` is
+    ///   ignored — the server owns the token lifetime.
+    pub async fn login(
+        &self,
+        username: &str,
+        password: &str,
+        expires_in: Duration,
+    ) -> Result<Option<String>> {
+        self.users().login(username, password, expires_in).await
     }
 
-    /// For relay backends, log in and store the access token internally.
-    pub async fn login(&self, username: &str, password: &str) -> Result<String> {
-        match &*self.backend {
-            Backend::Relay(relay) => relay.login(username, password).await,
-            Backend::Local(_) => Err(Error::InvalidArgument(
-                "login() is only valid for relay backends".into(),
-            )),
-        }
-    }
-
-    /// For relay backends, authenticate as a service via the client-credentials
-    /// grant and store the issued access token internally. The credentials are
-    /// also retained so the token can be transparently refreshed on a 401.
-    pub async fn login_client_credentials(
+    /// Log in as a machine-to-machine service via the client-credentials grant,
+    /// returning a short-lived scoped access token (or `None` if the client is
+    /// unknown, inactive, expired, or the secret does not match).
+    ///
+    /// - local: verifies the secret and signs a scoped JWT. `expires_in` sets
+    ///   the token lifetime.
+    /// - relay: delegates to the central server's `POST /token` and stores the
+    ///   token (plus the credentials, for transparent refresh on a 401)
+    ///   internally. `expires_in` is ignored — the server owns the lifetime.
+    pub async fn login_service(
         &self,
         client_id: &str,
         client_secret: &str,
-    ) -> Result<String> {
-        match &*self.backend {
-            Backend::Relay(relay) => {
-                relay
-                    .login_client_credentials(client_id, client_secret)
-                    .await
-            }
-            Backend::Local(_) => Err(Error::InvalidArgument(
-                "login_client_credentials() is only valid for relay backends".into(),
-            )),
+        expires_in: Duration,
+    ) -> Result<Option<String>> {
+        self.service_clients()
+            .login(client_id, client_secret, expires_in)
+            .await
+    }
+
+    /// Convenience wrapper around [`resolve_principal`](Self::resolve_principal)
+    /// that returns the [`User`] only when the token belongs to an active user,
+    /// discarding service tokens and invalid/expired tokens as `Ok(None)`.
+    pub async fn verify_token_and_get_user(&self, token: &str) -> Result<Option<User>> {
+        match self.resolve_principal(token).await? {
+            Some(Principal::User(user)) => Ok(Some(user)),
+            _ => Ok(None),
         }
     }
 
-    /// Resolve a bearer token to its owning [`User`], backend-agnostically.
+    /// Resolve a bearer token to its [`Principal`] (user or service client),
+    /// backend-agnostically.
     ///
-    /// - local: verifies the JWT signature and expiry with the configured
-    ///   [`TokenManager`], then loads the user named by the `sub` claim.
-    /// - relay: delegates to the server via `GET /me`, which performs the same
-    ///   validation server-side.
+    /// - local: verifies the JWT with the configured [`TokenManager`], then
+    ///   classifies the token by its `kind` claim — a `service` token yields
+    ///   [`Principal::Service`], otherwise the `sub` user is loaded and
+    ///   returned as [`Principal::User`].
+    /// - relay: delegates to the server via `POST /introspect`, which performs
+    ///   the same classification server-side.
     ///
-    /// Returns `Ok(None)` for an invalid, expired, or non-user (service) token
-    /// in both cases. Local without a token manager yields
+    /// Returns `Ok(None)` for an invalid, expired, or inactive-user token in
+    /// both cases. Local without a token manager yields
     /// [`Error::MissingTokenManager`].
-    pub async fn verify_token_and_get_user(&self, token: &str) -> Result<Option<User>> {
+    pub async fn resolve_principal(&self, token: &str) -> Result<Option<Principal>> {
         match &*self.backend {
             Backend::Local(local) => {
                 let tm = local
@@ -206,16 +231,34 @@ impl Database {
                     Ok(c) => c,
                     Err(_) => return Ok(None),
                 };
+                if claims.get("kind").and_then(Value::as_str) == Some("service") {
+                    let client_id = claims
+                        .get("client_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let scopes = claims
+                        .get("scope")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .map(str::to_string)
+                        .collect();
+                    return Ok(Some(Principal::Service { client_id, scopes }));
+                }
                 let user_id = claims
                     .get("sub")
                     .and_then(Value::as_str)
                     .and_then(|s| s.parse::<i64>().ok());
-                match user_id {
-                    Some(id) => self.users().get_by_id(id, None).await,
-                    None => Ok(None),
+                let Some(id) = user_id else {
+                    return Ok(None);
+                };
+                match self.users().get_by_id(id, None).await? {
+                    Some(user) if user.is_active => Ok(Some(Principal::User(user))),
+                    _ => Ok(None),
                 }
             }
-            Backend::Relay(relay) => relay.me::<User>(token).await,
+            Backend::Relay(relay) => relay.introspect(token).await,
         }
     }
 
@@ -255,14 +298,6 @@ impl Database {
         };
         users.set_admin(user.id, true, None).await?;
         Ok(Some(user))
-    }
-
-    pub fn is_local(&self) -> bool {
-        matches!(&*self.backend, Backend::Local(_))
-    }
-
-    pub fn is_relay(&self) -> bool {
-        matches!(&*self.backend, Backend::Relay(_))
     }
 }
 

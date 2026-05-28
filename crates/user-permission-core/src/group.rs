@@ -142,9 +142,15 @@ impl GroupManager {
                     .await?;
                 row.as_ref().map(Group::from_row).transpose()
             }
-            Backend::Relay(_) => Err(Error::InvalidArgument(
-                "get_by_name is not supported over the relay backend".into(),
-            )),
+            Backend::Relay(_) => {
+                // The relay API has no name lookup; filter the full list, which
+                // keeps the result identical to the local SQL query.
+                Ok(self
+                    .list_all(token)
+                    .await?
+                    .into_iter()
+                    .find(|g| g.name == name))
+            }
         }
     }
 
@@ -167,12 +173,21 @@ impl GroupManager {
     }
 
     pub async fn list_admin_groups(&self, token: Option<&str>) -> Result<Vec<Group>> {
-        let local = self.backend.as_local()?;
-        local.verify_if_present(token)?;
-        let rows = sqlx::query("SELECT * FROM groups WHERE is_admin = 1 ORDER BY id")
-            .fetch_all(&local.pool)
-            .await?;
-        rows.iter().map(Group::from_row).collect()
+        match &*self.backend {
+            Backend::Local(local) => {
+                local.verify_if_present(token)?;
+                let rows = sqlx::query("SELECT * FROM groups WHERE is_admin = 1 ORDER BY id")
+                    .fetch_all(&local.pool)
+                    .await?;
+                rows.iter().map(Group::from_row).collect()
+            }
+            Backend::Relay(_) => Ok(self
+                .list_all(token)
+                .await?
+                .into_iter()
+                .filter(|g| g.is_admin)
+                .collect()),
+        }
     }
 
     pub async fn update(

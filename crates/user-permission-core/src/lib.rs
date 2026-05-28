@@ -10,8 +10,7 @@
 //! let db = Database::open_local("app.db", Some("secret.key")).await?;
 //! let user = db.users().create("alice", "password123", "Alice", None).await?;
 //! let token = db
-//!     .users()
-//!     .authenticate("alice", "password123", Duration::from_secs(3600))
+//!     .login("alice", "password123", Duration::from_secs(3600))
 //!     .await?;
 //! assert!(token.is_some());
 //! # let _ = user;
@@ -22,18 +21,17 @@
 mod database;
 mod error;
 mod group;
-pub mod password;
+mod password;
 mod relay;
 mod service_client;
-pub mod token;
+mod token;
 mod user;
 
-pub use database::Database;
+pub use database::{Database, Principal};
 pub use error::{Error, Result};
 pub use group::{Group, GroupManager, GroupUpdate};
 pub use service_client::{
     validate_scopes, ServiceClient, ServiceClientManager, ALL_SCOPES, SCOPE_GROUPS_READ,
     SCOPE_USERS_READ,
 };
-pub use token::{load_or_create_secret, BaseClaims, TokenManager};
 pub use user::{User, UserManager, UserUpdate};

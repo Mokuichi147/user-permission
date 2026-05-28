@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use user_permission_core::{Database, GroupUpdate, UserUpdate};
+use user_permission_core::{Database, GroupUpdate, Principal, UserUpdate, SCOPE_USERS_READ};
 
 async fn open_test_db() -> (Database, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -97,27 +97,27 @@ async fn authenticate_and_verify() {
     let (db, _dir) = open_test_db().await;
     db.users().create("alice", "pw", "", None).await.unwrap();
     let token = db
-        .users()
-        .authenticate("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
-    let claims = db.token_manager().unwrap().verify_token(&token).unwrap();
-    assert_eq!(
-        claims["username"],
-        serde_json::Value::String("alice".into())
+    let principal = db.resolve_principal(&token).await.unwrap().expect("principal");
+    let user_permission_core::Principal::User(user) = principal else {
+        panic!("expected a user principal");
+    };
+    assert_eq!(user.username, "alice");
+    assert!(
+        db.users().is_admin(user.id, None).await.unwrap(),
+        "first user is admin"
     );
-    assert_eq!(claims["is_admin"], serde_json::Value::Bool(true)); // first user is admin
 
     assert!(db
-        .users()
-        .authenticate("alice", "wrong", Duration::from_secs(60))
+        .login("alice", "wrong", Duration::from_secs(60))
         .await
         .unwrap()
         .is_none());
     assert!(db
-        .users()
-        .authenticate("nobody", "pw", Duration::from_secs(60))
+        .login("nobody", "pw", Duration::from_secs(60))
         .await
         .unwrap()
         .is_none());
@@ -266,8 +266,7 @@ async fn local_backend_verifies_per_call_token() {
 
     // 有効な JWT を発行して渡せばアクセスできる
     let token = db
-        .users()
-        .authenticate("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token issued");
@@ -326,4 +325,68 @@ async fn local_backend_without_token_manager_rejects_token() {
         .await
         .unwrap()
         .is_some());
+}
+
+#[tokio::test]
+async fn local_login_service_and_resolve_principal_classifies_service_token() {
+    let (db, _dir) = open_test_db().await;
+    let (client, secret) = db
+        .service_clients()
+        .create("svc", &[SCOPE_USERS_READ.to_string()], None)
+        .await
+        .unwrap();
+    let token = db
+        .login_service(&client.client_id, &secret, Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("service token");
+
+    match db.resolve_principal(&token).await.unwrap().expect("principal") {
+        Principal::Service { client_id, scopes } => {
+            assert_eq!(client_id, client.client_id);
+            assert_eq!(scopes, vec![SCOPE_USERS_READ.to_string()]);
+        }
+        other => panic!("expected a service principal, got {other:?}"),
+    }
+
+    // A service token must never resolve to a user.
+    assert!(db.verify_token_and_get_user(&token).await.unwrap().is_none());
+
+    // Wrong secret is rejected as a failed login.
+    assert!(db
+        .login_service(&client.client_id, "wrong", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn local_resolve_principal_rejects_inactive_user() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+
+    // An active user resolves fine.
+    assert!(matches!(
+        db.resolve_principal(&token).await.unwrap(),
+        Some(Principal::User(_))
+    ));
+
+    // Once deactivated, the same (still-valid) token resolves to None.
+    db.users()
+        .update(
+            alice.id,
+            UserUpdate {
+                is_active: Some(false),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(db.resolve_principal(&token).await.unwrap().is_none());
 }

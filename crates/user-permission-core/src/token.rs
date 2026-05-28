@@ -4,7 +4,6 @@ use std::time::Duration;
 use chrono::Utc;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
@@ -36,16 +35,6 @@ pub fn load_or_create_secret(path: impl AsRef<Path>) -> Result<String> {
     Ok(secret)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BaseClaims {
-    pub sub: String,
-    pub username: String,
-    pub iat: i64,
-    pub exp: i64,
-    #[serde(default)]
-    pub is_admin: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct TokenManager {
     secret: String,
@@ -58,10 +47,6 @@ impl TokenManager {
             secret: secret.into(),
             algorithm,
         }
-    }
-
-    pub fn hs256(secret: impl Into<String>) -> Self {
-        Self::new(secret, Algorithm::HS256)
     }
 
     pub fn from_file(path: impl AsRef<Path>, algorithm: Algorithm) -> Result<Self> {
@@ -147,13 +132,6 @@ impl TokenManager {
         }
     }
 
-    pub fn secret(&self) -> &str {
-        &self.secret
-    }
-
-    pub fn algorithm(&self) -> Algorithm {
-        self.algorithm
-    }
 }
 
 #[cfg(test)]
@@ -162,7 +140,7 @@ mod tests {
 
     #[test]
     fn create_and_verify_round_trip() {
-        let mgr = TokenManager::hs256("test-secret");
+        let mgr = TokenManager::new("test-secret", Algorithm::HS256);
         let token = mgr
             .create_token(42, "alice", Duration::from_secs(60), None)
             .unwrap();
@@ -173,7 +151,7 @@ mod tests {
 
     #[test]
     fn extra_claims_included() {
-        let mgr = TokenManager::hs256("k");
+        let mgr = TokenManager::new("k", Algorithm::HS256);
         let mut extra = Map::new();
         extra.insert("is_admin".into(), Value::Bool(true));
         let token = mgr

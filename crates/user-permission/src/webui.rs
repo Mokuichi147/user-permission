@@ -257,9 +257,10 @@ fn redirect_to_login(prefix: &str, htmx: bool) -> Response {
 
 async fn current_user(state: &Arc<AppState>, headers: &HeaderMap) -> Option<UserView> {
     let token = cookie_token(headers)?;
-    let claims = state.db.token_manager().ok()?.verify_token(&token).ok()?;
-    let user_id: i64 = claims.get("sub")?.as_str()?.parse().ok()?;
-    let user = state.db.users().get_by_id(user_id, None).await.ok()??;
+    let user = match state.db.resolve_principal(&token).await.ok()?? {
+        user_permission_core::Principal::User(user) => user,
+        user_permission_core::Principal::Service { .. } => return None,
+    };
     if !user.is_active {
         return None;
     }
@@ -353,8 +354,7 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
     let expires = state.config.webui_token_expires;
     match state
         .db
-        .users()
-        .authenticate(&form.username, &form.password, expires)
+        .login(&form.username, &form.password, expires)
         .await
     {
         Ok(Some(token)) => {
@@ -448,8 +448,7 @@ async fn register_submit(
     let target = format!("{prefix}/");
     match state
         .db
-        .users()
-        .authenticate(&form.username, &form.password, expires)
+        .login(&form.username, &form.password, expires)
         .await
     {
         Ok(Some(token)) => {
@@ -623,8 +622,7 @@ async fn me_password(
     let one_hour = std::time::Duration::from_secs(3600);
     match state
         .db
-        .users()
-        .authenticate(&user.username, &form.current_password, one_hour)
+        .login(&user.username, &form.current_password, one_hour)
         .await
     {
         Ok(Some(_)) => {
