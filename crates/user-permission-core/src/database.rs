@@ -197,16 +197,9 @@ impl Database {
             .await
     }
 
-    /// Resolve a bearer token to its owning [`User`], backend-agnostically.
-    ///
-    /// - local: verifies the JWT signature and expiry with the configured
-    ///   [`TokenManager`], then loads the user named by the `sub` claim.
-    /// - relay: delegates to the server via `GET /me`, which performs the same
-    ///   validation server-side.
-    ///
-    /// Returns `Ok(None)` for an invalid, expired, or non-user (service) token
-    /// in both cases. Local without a token manager yields
-    /// [`Error::MissingTokenManager`].
+    /// Convenience wrapper around [`resolve_principal`](Self::resolve_principal)
+    /// that returns the [`User`] only when the token belongs to an active user,
+    /// discarding service tokens and invalid/expired tokens as `Ok(None)`.
     pub async fn verify_token_and_get_user(&self, token: &str) -> Result<Option<User>> {
         match self.resolve_principal(token).await? {
             Some(Principal::User(user)) => Ok(Some(user)),
