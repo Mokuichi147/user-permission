@@ -7,6 +7,7 @@ use sqlx::Row;
 
 use crate::database::Backend;
 use crate::error::{Error, Result};
+use crate::group::{Group, GroupManager};
 use crate::password::{hash, verify};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,7 +348,10 @@ impl UserManager {
         is_admin: bool,
         token: Option<&str>,
     ) -> Result<bool> {
-        let local = self.backend.as_local()?;
+        let local = match &*self.backend {
+            Backend::Local(local) => local,
+            Backend::Relay(_) => return self.set_admin_relay(user_id, is_admin, token).await,
+        };
         local.verify_if_present(token)?;
         let pool = &local.pool;
         let mut tx = pool.begin().await?;
@@ -395,6 +399,43 @@ impl UserManager {
         }
 
         tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Relay implementation of [`set_admin`](Self::set_admin): drives the same
+    /// admin-group membership change through the public group endpoints. Unlike
+    /// the local path this is not a single transaction, but admin changes are
+    /// rare enough that the extra round-trips are acceptable.
+    async fn set_admin_relay(
+        &self,
+        user_id: i64,
+        is_admin: bool,
+        token: Option<&str>,
+    ) -> Result<bool> {
+        let groups = GroupManager::new(self.backend.clone());
+        let admin_groups: Vec<Group> = groups
+            .list_all(token)
+            .await?
+            .into_iter()
+            .filter(|g| g.is_admin)
+            .collect();
+        if is_admin {
+            let group_id = if let Some(g) = admin_groups.iter().find(|g| g.name == "admin") {
+                g.id
+            } else if let Some(g) = admin_groups.first() {
+                g.id
+            } else {
+                groups
+                    .create("admin", "UserPermission 管理者", true, token)
+                    .await?
+                    .id
+            };
+            groups.add_user(group_id, user_id, token).await?;
+        } else {
+            for g in admin_groups {
+                groups.remove_user(g.id, user_id, token).await?;
+            }
+        }
         Ok(true)
     }
 
