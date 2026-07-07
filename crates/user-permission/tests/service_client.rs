@@ -9,8 +9,8 @@ async fn spawn_server() -> (String, tempfile::TempDir) {
     let db = Database::open_local(dir.path().join("test.db"), Some(dir.path().join("secret.key")))
         .await
         .expect("open db");
-    db.users().create("admin", "pw", "Admin", None).await.unwrap();
-    db.users().create("bob", "pw", "Bob", None).await.unwrap();
+    db.users().create("admin", "pw-123456", "Admin", None).await.unwrap();
+    db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
 
     let app = build_app(db, WebConfig::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -24,7 +24,7 @@ async fn spawn_server() -> (String, tempfile::TempDir) {
 async fn admin_token(client: &reqwest::Client, base: &str) -> String {
     let resp = client
         .post(format!("{base}/token"))
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[("username", "admin"), ("password", "pw-123456")])
         .send()
         .await
         .unwrap();

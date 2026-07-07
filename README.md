@@ -30,9 +30,9 @@ async fn main() -> user_permission_core::Result<()> {
     // パスを渡すとローカル SQLite、URL を渡すと HTTP 中継になる
     let db = Database::open("app.db", Some("secret.key")).await?;
 
-    let alice = db.users().create("alice", "password123", "Alice", None).await?;
+    let alice = db.users().create("alice", "s3cret-pass", "Alice", None).await?;
     let token = db
-        .login("alice", "password123", Duration::from_secs(3600))
+        .login("alice", "s3cret-pass", Duration::from_secs(3600))
         .await?
         .expect("credentials");
     println!("token = {token}");
@@ -94,10 +94,21 @@ let db = Database::open("app.db", Some("secret.key")).await?;
 let db = Database::open("http://localhost:8001", None).await?;
 
 // リレー先へログインすると以後のリクエストにトークンが自動付与される
-let _token = db.login("alice", "password123", std::time::Duration::from_secs(3600)).await?;
+let _token = db.login("alice", "s3cret-pass", std::time::Duration::from_secs(3600)).await?;
 ```
 
 backend が確定している場合は `Database::open_local()` / `Database::open_relay()` も使えます。
+
+### パスワードポリシー
+
+パスワードを設定するすべての経路（作成・更新・WebUI の登録／変更／リセット）で、
+core 層の共通バリデーションが適用されます。
+
+- 8文字以上（`MIN_PASSWORD_LEN`）・1024バイト以下（`MAX_PASSWORD_LEN`）
+- `password` や `12345678` などのよくあるパスワードは長さを満たしても拒否
+
+違反時は `Error::WeakPassword`（REST API では `400 Bad Request`）が返ります。
+`user_permission_core::validate_password()` で事前チェックもできます。
 
 ## REST API
 

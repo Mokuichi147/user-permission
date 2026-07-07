@@ -43,6 +43,9 @@ pub enum Error {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("weak password: {0}")]
+    WeakPassword(String),
 }
 
 impl Error {
