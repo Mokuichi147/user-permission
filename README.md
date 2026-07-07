@@ -76,6 +76,7 @@ user-permission serve --host 0.0.0.0 --port 8001 --prefix /api --webui
 | `--prefix` | (なし) | APIルートプレフィックス（例: `/api`） |
 | `--webui` | 無効 | Web管理画面（HTMX+Tailwind）を有効化 |
 | `--webui-prefix` | `/ui` | 管理画面のURLプレフィックス |
+| `--cookie-secure` | 無効 | セッションCookieに `Secure` 属性を付与（HTTPS運用時は必ず有効化） |
 
 > **Web 管理画面の移植状況**: 現在はプレースホルダ画面のみ提供しています。HTMX/Tailwind ベースの完全な管理画面は今後のリリースで再実装予定です。当面は REST API を利用してください。
 
