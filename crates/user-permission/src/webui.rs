@@ -382,9 +382,15 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
     }
 }
 
-async fn logout(State(state): State<Arc<AppState>>) -> Response {
+async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let prefix = prefix(&state).to_string();
     let target = format!("{prefix}/login");
+    // Server-side revocation: bump the user's token_version so the cookie's
+    // JWT (and any other outstanding token of theirs) stops verifying, instead
+    // of merely deleting the cookie client-side.
+    if let Some(user) = current_user(&state, &headers).await {
+        let _ = state.db.users().revoke_tokens(user.id, None).await;
+    }
     let cookie = delete_cookie_value();
     (
         StatusCode::SEE_OTHER,

@@ -124,6 +124,91 @@ async fn authenticate_and_verify() {
 }
 
 #[tokio::test]
+async fn revoke_tokens_invalidates_existing_token() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(db.resolve_principal(&token).await.unwrap().is_some());
+
+    assert!(db.revoke_tokens(alice.id).await.unwrap());
+    assert!(
+        db.resolve_principal(&token).await.unwrap().is_none(),
+        "revoked token must be rejected"
+    );
+
+    // A fresh login works and yields a token with the new version.
+    let token2 = db
+        .login("alice", "pw", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(db.resolve_principal(&token2).await.unwrap().is_some());
+
+    // Unknown user id → false.
+    assert!(!db.revoke_tokens(9999).await.unwrap());
+}
+
+#[tokio::test]
+async fn password_change_revokes_existing_token() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(db.resolve_principal(&token).await.unwrap().is_some());
+
+    db.users()
+        .update(
+            alice.id,
+            UserUpdate {
+                password: Some("new-pw".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        db.resolve_principal(&token).await.unwrap().is_none(),
+        "token issued before a password change must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn deactivation_revokes_token_even_after_reactivation() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+
+    let deactivate = UserUpdate {
+        is_active: Some(false),
+        ..Default::default()
+    };
+    db.users().update(alice.id, deactivate, None).await.unwrap();
+    assert!(db.resolve_principal(&token).await.unwrap().is_none());
+
+    let reactivate = UserUpdate {
+        is_active: Some(true),
+        ..Default::default()
+    };
+    db.users().update(alice.id, reactivate, None).await.unwrap();
+    assert!(
+        db.resolve_principal(&token).await.unwrap().is_none(),
+        "reactivation must not resurrect tokens issued before deactivation"
+    );
+}
+
+#[tokio::test]
 async fn group_crud_and_membership() {
     let (db, _dir) = open_test_db().await;
     let alice = db.users().create("alice", "pw", "", None).await.unwrap(); // admin
