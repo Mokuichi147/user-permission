@@ -4,10 +4,13 @@ use rand::rngs::OsRng;
 
 use crate::error::{Error, Result};
 
-/// Minimum accepted password length (in characters).
+/// Default minimum accepted password length (in characters), used by
+/// [`PasswordPolicy::default`]. Configurable per [`Database`](crate::Database)
+/// via [`Database::open_local_with_policy`](crate::Database::open_local_with_policy).
 pub const MIN_PASSWORD_LEN: usize = 8;
 /// Maximum accepted password length (in bytes), a sanity cap against
-/// pathological inputs reaching Argon2.
+/// pathological inputs reaching Argon2. Not configurable — this is a hard
+/// safety limit, not a strength setting.
 pub const MAX_PASSWORD_LEN: usize = 1024;
 
 /// Passwords that meet the length rule but are so common they are rejected
@@ -26,28 +29,54 @@ const COMMON_PASSWORDS: &[&str] = &[
     "letmein123",
 ];
 
-/// Validate a user-chosen password against the strength policy. Every path
-/// that sets a password (create / update / WebUI register / reset) funnels
-/// through [`UserManager`](crate::UserManager), which calls this before
-/// hashing. Returns [`Error::WeakPassword`] describing the violated rule.
+/// Configurable password strength policy. Every path that sets a password
+/// (create / update / WebUI register / reset) funnels through
+/// [`UserManager`](crate::UserManager), which validates against the policy
+/// configured on the owning [`Database`](crate::Database) before hashing.
+#[derive(Debug, Clone, Copy)]
+pub struct PasswordPolicy {
+    /// Minimum accepted length, in characters.
+    pub min_len: usize,
+}
+
+impl Default for PasswordPolicy {
+    fn default() -> Self {
+        Self {
+            min_len: MIN_PASSWORD_LEN,
+        }
+    }
+}
+
+impl PasswordPolicy {
+    /// Validate a user-chosen password against this policy. Returns
+    /// [`Error::WeakPassword`] describing the violated rule.
+    pub fn validate(&self, password: &str) -> Result<()> {
+        if password.chars().count() < self.min_len {
+            let min_len = self.min_len;
+            return Err(Error::WeakPassword(format!(
+                "password must be at least {min_len} characters"
+            )));
+        }
+        if password.len() > MAX_PASSWORD_LEN {
+            return Err(Error::WeakPassword(format!(
+                "password must be at most {MAX_PASSWORD_LEN} bytes"
+            )));
+        }
+        let lowered = password.to_lowercase();
+        if COMMON_PASSWORDS.contains(&lowered.as_str()) {
+            return Err(Error::WeakPassword(
+                "password is too common; choose a less predictable one".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Validate a user-chosen password against the default strength policy
+/// (minimum [`MIN_PASSWORD_LEN`] characters). Prefer
+/// [`PasswordPolicy::validate`] when a custom minimum length is configured.
 pub fn validate(password: &str) -> Result<()> {
-    if password.chars().count() < MIN_PASSWORD_LEN {
-        return Err(Error::WeakPassword(format!(
-            "password must be at least {MIN_PASSWORD_LEN} characters"
-        )));
-    }
-    if password.len() > MAX_PASSWORD_LEN {
-        return Err(Error::WeakPassword(format!(
-            "password must be at most {MAX_PASSWORD_LEN} bytes"
-        )));
-    }
-    let lowered = password.to_lowercase();
-    if COMMON_PASSWORDS.contains(&lowered.as_str()) {
-        return Err(Error::WeakPassword(
-            "password is too common; choose a less predictable one".into(),
-        ));
-    }
-    Ok(())
+    PasswordPolicy::default().validate(password)
 }
 
 /// Hash a plain-text password with Argon2id (PHC string format, compatible with `pwdlib`).
@@ -126,5 +155,22 @@ mod tests {
     #[test]
     fn validate_error_is_weak_password() {
         assert!(matches!(validate("1"), Err(Error::WeakPassword(_))));
+    }
+
+    #[test]
+    fn custom_policy_min_len_is_enforced() {
+        let strict = PasswordPolicy { min_len: 12 };
+        assert!(strict.validate("short7chars").is_err()); // 11文字
+        assert!(strict.validate("twelve-chars").is_ok()); // 12文字
+
+        let lenient = PasswordPolicy { min_len: 4 };
+        assert!(lenient.validate("abcd").is_ok());
+        assert!(lenient.validate("abc").is_err());
+    }
+
+    #[test]
+    fn custom_policy_still_rejects_common_passwords() {
+        let lenient = PasswordPolicy { min_len: 4 };
+        assert!(lenient.validate("password").is_err());
     }
 }

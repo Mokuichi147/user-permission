@@ -1,12 +1,24 @@
 use std::time::Duration;
 
-use user_permission_core::{Database, GroupUpdate, Principal, UserUpdate, SCOPE_USERS_READ};
+use user_permission_core::{
+    Database, GroupUpdate, PasswordPolicy, Principal, UserUpdate, SCOPE_USERS_READ,
+};
 
 async fn open_test_db() -> (Database, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let secret_path = dir.path().join("secret.key");
     let db = Database::open_local(&db_path, Some(&secret_path))
+        .await
+        .expect("open db");
+    (db, dir)
+}
+
+async fn open_test_db_with_policy(policy: PasswordPolicy) -> (Database, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let secret_path = dir.path().join("secret.key");
+    let db = Database::open_local_with_policy(&db_path, Some(&secret_path), policy)
         .await
         .expect("open db");
     (db, dir)
@@ -127,6 +139,38 @@ async fn weak_passwords_are_rejected_on_every_path() {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn password_min_len_is_configurable() {
+    // 最小長を12文字に設定すると、デフォルトでは通る8〜11文字が拒否される。
+    let (strict_db, _dir) = open_test_db_with_policy(PasswordPolicy { min_len: 12 }).await;
+    let err = strict_db
+        .users()
+        .create("alice", "eleven-char", "", None) // 11文字
+        .await
+        .unwrap_err();
+    assert!(matches!(err, user_permission_core::Error::WeakPassword(_)));
+    strict_db
+        .users()
+        .create("alice", "twelve-chars", "", None) // 12文字
+        .await
+        .unwrap();
+
+    // 最小長を4文字に緩めると、デフォルトでは拒否される短いパスワードが通る。
+    let (lenient_db, _dir2) = open_test_db_with_policy(PasswordPolicy { min_len: 4 }).await;
+    lenient_db
+        .users()
+        .create("bob", "ab12", "", None) // 4文字
+        .await
+        .unwrap();
+    // よくあるパスワードの拒否は最小長に関わらず維持される。
+    let err = lenient_db
+        .users()
+        .create("carol", "password", "", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, user_permission_core::Error::WeakPassword(_)));
 }
 
 #[tokio::test]

@@ -72,9 +72,9 @@ impl UserManager {
         display_name: &str,
         token: Option<&str>,
     ) -> Result<User> {
-        crate::password::validate(password)?;
         match &*self.backend {
             Backend::Local(local) => {
+                local.password_policy.validate(password)?;
                 local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let hashed = hash(password)?;
@@ -223,11 +223,11 @@ impl UserManager {
         update: UserUpdate,
         token: Option<&str>,
     ) -> Result<Option<User>> {
-        if let Some(p) = &update.password {
-            crate::password::validate(p)?;
-        }
         match &*self.backend {
             Backend::Local(local) => {
+                if let Some(p) = &update.password {
+                    local.password_policy.validate(p)?;
+                }
                 local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let mut fields: Vec<&str> = Vec::new();

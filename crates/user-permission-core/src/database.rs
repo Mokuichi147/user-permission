@@ -8,6 +8,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::error::{Error, Result};
 use crate::group::GroupManager;
+use crate::password::PasswordPolicy;
 use crate::relay::RelayBackend;
 use crate::service_client::ServiceClientManager;
 use crate::token::TokenManager;
@@ -41,6 +42,7 @@ pub(crate) enum Backend {
 pub(crate) struct LocalBackend {
     pub pool: SqlitePool,
     pub token_manager: Option<TokenManager>,
+    pub password_policy: PasswordPolicy,
 }
 
 impl LocalBackend {
@@ -94,9 +96,25 @@ impl Database {
     /// Open a local SQLite database. If `secret_path` is provided, a `TokenManager` is
     /// initialised from that file (created if missing); otherwise calling
     /// `token_manager()` returns `Error::MissingTokenManager`.
+    ///
+    /// Uses the default [`PasswordPolicy`] (minimum
+    /// [`MIN_PASSWORD_LEN`](crate::MIN_PASSWORD_LEN) characters); use
+    /// [`open_local_with_policy`](Self::open_local_with_policy) to configure it.
     pub async fn open_local(
         db_path: impl AsRef<Path>,
         secret_path: Option<impl AsRef<Path>>,
+    ) -> Result<Self> {
+        Self::open_local_with_policy(db_path, secret_path, PasswordPolicy::default()).await
+    }
+
+    /// Like [`open_local`](Self::open_local), but with an explicit
+    /// [`PasswordPolicy`] (e.g. a custom minimum length) applied to every
+    /// password set through this `Database` (create / update / login-adjacent
+    /// paths that hash a new password).
+    pub async fn open_local_with_policy(
+        db_path: impl AsRef<Path>,
+        secret_path: Option<impl AsRef<Path>>,
+        password_policy: PasswordPolicy,
     ) -> Result<Self> {
         let path = db_path.as_ref();
         let opts = SqliteConnectOptions::new()
@@ -121,6 +139,7 @@ impl Database {
             backend: Arc::new(Backend::Local(LocalBackend {
                 pool,
                 token_manager,
+                password_policy,
             })),
         })
     }

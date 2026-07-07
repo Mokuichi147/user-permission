@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use user_permission::{build_app, WebConfig};
-use user_permission_core::Database;
+use user_permission_core::{Database, PasswordPolicy, MIN_PASSWORD_LEN};
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +48,10 @@ enum Command {
         /// WebUI URL prefix
         #[arg(long = "webui-prefix", default_value = "/ui")]
         webui_prefix: String,
+
+        /// Minimum password length enforced on every create/update path
+        #[arg(long = "password-min-len", default_value_t = MIN_PASSWORD_LEN)]
+        password_min_len: usize,
     },
 }
 
@@ -70,8 +74,12 @@ async fn main() -> anyhow::Result<()> {
             prefix,
             webui,
             webui_prefix,
+            password_min_len,
         } => {
-            let db = Database::open_local(&database, Some(&secret))
+            let policy = PasswordPolicy {
+                min_len: password_min_len,
+            };
+            let db = Database::open_local_with_policy(&database, Some(&secret), policy)
                 .await
                 .with_context(|| format!("opening database at {}", database.display()))?;
 
