@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
                 webui_enabled: webui,
                 token_expires: Duration::from_secs(3600),
                 webui_token_expires: Duration::from_secs(86_400),
+                ..Default::default()
             };
             let app = build_app(db, config);
 

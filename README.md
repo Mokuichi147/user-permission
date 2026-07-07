@@ -99,6 +99,18 @@ let _token = db.login("alice", "password123", std::time::Duration::from_secs(360
 
 backend が確定している場合は `Database::open_local()` / `Database::open_relay()` も使えます。
 
+### ログイン試行のレート制限
+
+ログイン（`POST /token` の password / client_credentials 両グラント、および WebUI の
+ログイン）は、同一ユーザー名（またはクライアントID）での連続失敗が
+`WebConfig::login_max_failures` 回（デフォルト 5 回）に達すると、
+`WebConfig::login_lockout`（デフォルト 5 分）の間 `429 Too Many Requests` で
+拒否されます。成功するとカウントはリセットされます。失敗は `tracing` の
+warn レベルで記録されます。`login_max_failures: 0` で無効化できます。
+
+カウンタはプロセス内メモリ上にあるため、複数インスタンス構成では
+インスタンスごとに独立して数えられる点に注意してください。
+
 ## REST API
 
 | メソッド | パス | 説明 | 認証 |

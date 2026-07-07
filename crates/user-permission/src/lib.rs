@@ -17,6 +17,7 @@
 pub mod api;
 pub mod auth;
 pub mod error;
+pub mod login_guard;
 pub mod state;
 pub mod webui;
 
@@ -35,7 +36,7 @@ pub fn build_app(db: Database, config: WebConfig) -> Router {
     let webui_enabled = config.webui_enabled;
     let api_prefix = config.api_prefix.clone();
     let webui_prefix = config.webui_prefix.clone();
-    let state = Arc::new(AppState { db, config });
+    let state = Arc::new(AppState::new(db, config));
 
     let mut app = Router::new();
 
@@ -70,6 +71,6 @@ pub fn build_app(db: Database, config: WebConfig) -> Router {
 
 /// Convenience constructor for an API-only router with no nesting.
 pub fn api_router(db: Database, config: WebConfig) -> Router {
-    let state = Arc::new(AppState { db, config });
+    let state = Arc::new(AppState::new(db, config));
     api::router().with_state(state)
 }

@@ -352,12 +352,26 @@ struct LoginForm {
 async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) -> Response {
     let prefix = prefix(&state).to_string();
     let expires = state.config.webui_token_expires;
+    // API の /token と同じキーを使い、両経路合算で試行回数を制限する。
+    let guard_key = format!("user:{}", form.username);
+    if state.login_guard.check(&guard_key).is_some() {
+        return render_with_status(
+            LoginTemplate {
+                prefix: &prefix,
+                user: None,
+                is_admin: false,
+                error: Some("ログイン試行が多すぎます。しばらく待ってから再試行してください"),
+            },
+            StatusCode::TOO_MANY_REQUESTS,
+        );
+    }
     match state
         .db
         .login(&form.username, &form.password, expires)
         .await
     {
         Ok(Some(token)) => {
+            state.login_guard.record_success(&guard_key);
             let max_age = webui_token_secs(&state);
             let cookie = set_cookie_value(&token, max_age);
             let target = format!("{prefix}/");
@@ -370,15 +384,19 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
             )
                 .into_response()
         }
-        _ => render_with_status(
-            LoginTemplate {
-                prefix: &prefix,
-                user: None,
-                is_admin: false,
-                error: Some("ユーザー名またはパスワードが間違っています"),
-            },
-            StatusCode::OK,
-        ),
+        _ => {
+            let failures = state.login_guard.record_failure(&guard_key);
+            tracing::warn!(username = %form.username, failures, "webui login failed");
+            render_with_status(
+                LoginTemplate {
+                    prefix: &prefix,
+                    user: None,
+                    is_admin: false,
+                    error: Some("ユーザー名またはパスワードが間違っています"),
+                },
+                StatusCode::OK,
+            )
+        }
     }
 }
 
