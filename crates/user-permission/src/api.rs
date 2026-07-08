@@ -189,6 +189,7 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_user).patch(update_user).delete(delete_user),
         )
         .route("/users/:user_id/groups", get(list_user_groups))
+        .route("/users/:user_id/revoke-tokens", post(revoke_tokens))
         .route("/groups", post(create_group).get(list_groups))
         .route(
             "/groups/:group_id",
@@ -433,6 +434,27 @@ async fn delete_user(
         ));
     }
     if !state.db.users().delete(user_id, None).await? {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "User not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Invalidate every outstanding token for a user (their own, or any user's
+/// when called by an admin). The caller's current token is revoked too when
+/// targeting themselves.
+async fn revoke_tokens(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<i64>,
+    AuthUser(current): AuthUser,
+) -> Result<StatusCode, ApiError> {
+    let caller_is_admin = state.db.users().is_admin(current.id, None).await?;
+    if current.id != user_id && !caller_is_admin {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Admin privileges required",
+        ));
+    }
+    if !state.db.users().revoke_tokens(user_id, None).await? {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "User not found"));
     }
     Ok(StatusCode::NO_CONTENT)
