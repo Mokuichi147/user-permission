@@ -11,11 +11,11 @@ async fn spawn_server() -> (String, i64, i64, i64, tempfile::TempDir) {
         .expect("open db");
     let admin = db
         .users()
-        .create("admin", "pw", "Admin", None)
+        .create("admin", "pw-123456", "Admin", None)
         .await
         .unwrap();
-    let bob = db.users().create("bob", "pw", "Bob", None).await.unwrap();
-    db.users().create("carol", "pw", "Carol", None).await.unwrap();
+    let bob = db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
+    db.users().create("carol", "pw-123456", "Carol", None).await.unwrap();
     let editors = db
         .groups()
         .create("editors", "Editors", false, None)
@@ -35,7 +35,7 @@ async fn spawn_server() -> (String, i64, i64, i64, tempfile::TempDir) {
 async fn token_for(client: &reqwest::Client, base: &str, user: &str) -> String {
     let resp = client
         .post(format!("{base}/token"))
-        .form(&[("username", user), ("password", "pw")])
+        .form(&[("username", user), ("password", "pw-123456")])
         .send()
         .await
         .unwrap();
