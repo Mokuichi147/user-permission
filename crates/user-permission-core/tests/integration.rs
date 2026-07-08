@@ -222,9 +222,9 @@ async fn authenticate_and_verify() {
 #[tokio::test]
 async fn revoke_tokens_invalidates_existing_token() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
     let token = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
@@ -238,7 +238,7 @@ async fn revoke_tokens_invalidates_existing_token() {
 
     // A fresh login works and yields a token with the new version.
     let token2 = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
@@ -251,9 +251,9 @@ async fn revoke_tokens_invalidates_existing_token() {
 #[tokio::test]
 async fn password_change_revokes_existing_token() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
     let token = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
@@ -263,7 +263,7 @@ async fn password_change_revokes_existing_token() {
         .update(
             alice.id,
             UserUpdate {
-                password: Some("new-pw".into()),
+                password: Some("new-pw-123456".into()),
                 ..Default::default()
             },
             None,
@@ -279,9 +279,9 @@ async fn password_change_revokes_existing_token() {
 #[tokio::test]
 async fn deactivation_revokes_token_even_after_reactivation() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
     let token = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
