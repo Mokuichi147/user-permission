@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use user_permission_core::{Database, GroupUpdate, Principal, UserUpdate, SCOPE_USERS_READ};
+use user_permission_core::{
+    Database, GroupUpdate, PasswordPolicy, Principal, UserUpdate, SCOPE_USERS_READ,
+};
 
 async fn open_test_db() -> (Database, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -12,17 +14,27 @@ async fn open_test_db() -> (Database, tempfile::TempDir) {
     (db, dir)
 }
 
+async fn open_test_db_with_policy(policy: PasswordPolicy) -> (Database, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let secret_path = dir.path().join("secret.key");
+    let db = Database::open_local_with_policy(&db_path, Some(&secret_path), policy)
+        .await
+        .expect("open db");
+    (db, dir)
+}
+
 #[tokio::test]
 async fn first_user_auto_admin() {
     let (db, _dir) = open_test_db().await;
     let alice = db
         .users()
-        .create("alice", "pw", "Alice", None)
+        .create("alice", "pw-123456", "Alice", None)
         .await
         .unwrap();
     assert!(db.users().is_admin(alice.id, None).await.unwrap());
 
-    let bob = db.users().create("bob", "pw", "Bob", None).await.unwrap();
+    let bob = db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
     assert!(!db.users().is_admin(bob.id, None).await.unwrap());
 }
 
@@ -31,7 +43,7 @@ async fn user_crud() {
     let (db, _dir) = open_test_db().await;
     let alice = db
         .users()
-        .create("alice", "pw", "Alice", None)
+        .create("alice", "pw-123456", "Alice", None)
         .await
         .unwrap();
     assert_eq!(alice.username, "alice");
@@ -78,12 +90,96 @@ async fn user_crud() {
 }
 
 #[tokio::test]
-async fn duplicate_username_conflict() {
+async fn weak_passwords_are_rejected_on_every_path() {
     let (db, _dir) = open_test_db().await;
-    db.users().create("alice", "pw", "", None).await.unwrap();
+
+    // 作成時: 8文字未満・よくあるパスワードは拒否
+    for weak in ["", "1", "short7c", "password", "12345678"] {
+        let err = db.users().create("alice", weak, "", None).await.unwrap_err();
+        assert!(
+            matches!(err, user_permission_core::Error::WeakPassword(_)),
+            "expected WeakPassword for {weak:?}, got {err}"
+        );
+    }
+
+    // 妥当なパスワードでは作成できる
+    let alice = db
+        .users()
+        .create("alice", "pw-123456", "", None)
+        .await
+        .unwrap();
+
+    // 更新時も同じポリシーが適用される
     let err = db
         .users()
-        .create("alice", "pw2", "", None)
+        .update(
+            alice.id,
+            UserUpdate {
+                password: Some("123".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        user_permission_core::Error::WeakPassword(_)
+    ));
+
+    // パスワード以外の更新はポリシーの影響を受けない
+    db.users()
+        .update(
+            alice.id,
+            UserUpdate {
+                display_name: Some("Alice".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn password_min_len_is_configurable() {
+    // 最小長を12文字に設定すると、デフォルトでは通る8〜11文字が拒否される。
+    let (strict_db, _dir) = open_test_db_with_policy(PasswordPolicy { min_len: 12 }).await;
+    let err = strict_db
+        .users()
+        .create("alice", "eleven-char", "", None) // 11文字
+        .await
+        .unwrap_err();
+    assert!(matches!(err, user_permission_core::Error::WeakPassword(_)));
+    strict_db
+        .users()
+        .create("alice", "twelve-chars", "", None) // 12文字
+        .await
+        .unwrap();
+
+    // 最小長を4文字に緩めると、デフォルトでは拒否される短いパスワードが通る。
+    let (lenient_db, _dir2) = open_test_db_with_policy(PasswordPolicy { min_len: 4 }).await;
+    lenient_db
+        .users()
+        .create("bob", "ab12", "", None) // 4文字
+        .await
+        .unwrap();
+    // よくあるパスワードの拒否は最小長に関わらず維持される。
+    let err = lenient_db
+        .users()
+        .create("carol", "password", "", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, user_permission_core::Error::WeakPassword(_)));
+}
+
+#[tokio::test]
+async fn duplicate_username_conflict() {
+    let (db, _dir) = open_test_db().await;
+    db.users().create("alice", "pw-123456", "", None).await.unwrap();
+    let err = db
+        .users()
+        .create("alice", "pw2-123456", "", None)
         .await
         .unwrap_err();
     assert!(
@@ -95,9 +191,9 @@ async fn duplicate_username_conflict() {
 #[tokio::test]
 async fn authenticate_and_verify() {
     let (db, _dir) = open_test_db().await;
-    db.users().create("alice", "pw", "", None).await.unwrap();
+    db.users().create("alice", "pw-123456", "", None).await.unwrap();
     let token = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");
@@ -117,17 +213,102 @@ async fn authenticate_and_verify() {
         .unwrap()
         .is_none());
     assert!(db
-        .login("nobody", "pw", Duration::from_secs(60))
+        .login("nobody", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .is_none());
 }
 
 #[tokio::test]
+async fn revoke_tokens_invalidates_existing_token() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw-123456", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(db.resolve_principal(&token).await.unwrap().is_some());
+
+    assert!(db.revoke_tokens(alice.id).await.unwrap());
+    assert!(
+        db.resolve_principal(&token).await.unwrap().is_none(),
+        "revoked token must be rejected"
+    );
+
+    // A fresh login works and yields a token with the new version.
+    let token2 = db
+        .login("alice", "pw-123456", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(db.resolve_principal(&token2).await.unwrap().is_some());
+
+    // Unknown user id → false.
+    assert!(!db.revoke_tokens(9999).await.unwrap());
+}
+
+#[tokio::test]
+async fn password_change_revokes_existing_token() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw-123456", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(db.resolve_principal(&token).await.unwrap().is_some());
+
+    db.users()
+        .update(
+            alice.id,
+            UserUpdate {
+                password: Some("new-pw-123456".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        db.resolve_principal(&token).await.unwrap().is_none(),
+        "token issued before a password change must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn deactivation_revokes_token_even_after_reactivation() {
+    let (db, _dir) = open_test_db().await;
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
+    let token = db
+        .login("alice", "pw-123456", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("token");
+
+    let deactivate = UserUpdate {
+        is_active: Some(false),
+        ..Default::default()
+    };
+    db.users().update(alice.id, deactivate, None).await.unwrap();
+    assert!(db.resolve_principal(&token).await.unwrap().is_none());
+
+    let reactivate = UserUpdate {
+        is_active: Some(true),
+        ..Default::default()
+    };
+    db.users().update(alice.id, reactivate, None).await.unwrap();
+    assert!(
+        db.resolve_principal(&token).await.unwrap().is_none(),
+        "reactivation must not resurrect tokens issued before deactivation"
+    );
+}
+
+#[tokio::test]
 async fn group_crud_and_membership() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "", None).await.unwrap(); // admin
-    let bob = db.users().create("bob", "pw", "", None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap(); // admin
+    let bob = db.users().create("bob", "pw-123456", "", None).await.unwrap();
 
     let editors = db
         .groups()
@@ -187,8 +368,8 @@ async fn group_crud_and_membership() {
 #[tokio::test]
 async fn promote_and_demote_admin() {
     let (db, _dir) = open_test_db().await;
-    let _alice = db.users().create("alice", "pw", "", None).await.unwrap(); // admin
-    let bob = db.users().create("bob", "pw", "", None).await.unwrap();
+    let _alice = db.users().create("alice", "pw-123456", "", None).await.unwrap(); // admin
+    let bob = db.users().create("bob", "pw-123456", "", None).await.unwrap();
 
     assert!(!db.users().is_admin(bob.id, None).await.unwrap());
 
@@ -250,7 +431,7 @@ async fn legacy_db_missing_is_admin_column() {
     // Now open with the new version: the ALTER should add is_admin.
     let secret = dir.path().join("secret.key");
     let db = Database::open_local(&db_path, Some(&secret)).await.unwrap();
-    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
     // alice is the first user → automatically admin
     assert!(db.users().is_admin(alice.id, None).await.unwrap());
 }
@@ -260,13 +441,13 @@ async fn local_backend_verifies_per_call_token() {
     let (db, _dir) = open_test_db().await;
     let alice = db
         .users()
-        .create("alice", "pw", "Alice", None)
+        .create("alice", "pw-123456", "Alice", None)
         .await
         .unwrap();
 
     // 有効な JWT を発行して渡せばアクセスできる
     let token = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token issued");
@@ -303,7 +484,7 @@ async fn local_backend_without_token_manager_rejects_token() {
         .unwrap();
     let alice = db
         .users()
-        .create("alice", "pw", "Alice", None)
+        .create("alice", "pw-123456", "Alice", None)
         .await
         .unwrap();
 
@@ -363,9 +544,9 @@ async fn local_login_service_and_resolve_principal_classifies_service_token() {
 #[tokio::test]
 async fn local_resolve_principal_rejects_inactive_user() {
     let (db, _dir) = open_test_db().await;
-    let alice = db.users().create("alice", "pw", "", None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
     let token = db
-        .login("alice", "pw", Duration::from_secs(60))
+        .login("alice", "pw-123456", Duration::from_secs(60))
         .await
         .unwrap()
         .expect("token");

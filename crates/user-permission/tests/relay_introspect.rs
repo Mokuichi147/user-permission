@@ -10,7 +10,7 @@ async fn spawn_server() -> (String, (String, String), tempfile::TempDir) {
         .expect("open db");
 
     // First user becomes admin.
-    db.users().create("alice", "pw", "Alice", None).await.unwrap();
+    db.users().create("alice", "pw-123456", "Alice", None).await.unwrap();
     let (client, secret) = db
         .service_clients()
         .create("svc", &[SCOPE_USERS_READ.to_string()], None)
@@ -34,7 +34,7 @@ async fn relay_introspect_classifies_principals() {
 
     // A user token resolves to Principal::User over the relay.
     let user_token = relay
-        .login("alice", "pw", std::time::Duration::from_secs(3600))
+        .login("alice", "pw-123456", std::time::Duration::from_secs(3600))
         .await
         .unwrap()
         .expect("user login should succeed");
