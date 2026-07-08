@@ -272,6 +272,18 @@ impl Database {
                 let Some(id) = user_id else {
                     return Ok(None);
                 };
+                // Reject tokens minted before the user's last revocation: the
+                // `ver` claim must match the current `token_version` (tokens
+                // predating the column carry no `ver` and count as version 0).
+                let token_ver = claims.get("ver").and_then(Value::as_i64).unwrap_or(0);
+                let current_ver: Option<i64> =
+                    sqlx::query_scalar("SELECT token_version FROM users WHERE id = ?")
+                        .bind(id)
+                        .fetch_optional(&local.pool)
+                        .await?;
+                if current_ver != Some(token_ver) {
+                    return Ok(None);
+                }
                 match self.users().get_by_id(id, None).await? {
                     Some(user) if user.is_active => Ok(Some(Principal::User(user))),
                     _ => Ok(None),
@@ -279,6 +291,12 @@ impl Database {
             }
             Backend::Relay(relay) => relay.introspect(token).await,
         }
+    }
+
+    /// Revoke every token previously issued to `user_id` by bumping the user's
+    /// `token_version`; see [`UserManager::revoke_tokens`].
+    pub async fn revoke_tokens(&self, user_id: i64) -> Result<bool> {
+        self.users().revoke_tokens(user_id, None).await
     }
 
     /// Ensure an admin user exists (local backend only).
@@ -345,6 +363,22 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::query(include_str!("../migrations/0003_service_clients.sql"))
         .execute(pool)
         .await?;
+
+    // 0004: `users.token_version` for token revocation, ALTERed in for
+    // databases predating the column (0001 includes it on fresh databases).
+    let rows = sqlx::query("PRAGMA table_info(users)")
+        .fetch_all(pool)
+        .await?;
+    let has_token_version = rows.iter().any(|r| {
+        r.try_get::<String, _>("name")
+            .map(|n| n == "token_version")
+            .unwrap_or(false)
+    });
+    if !has_token_version {
+        sqlx::query("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
 
     Ok(())
 }

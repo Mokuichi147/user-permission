@@ -100,6 +100,33 @@ let _token = db.login("alice", "s3cret-pass", std::time::Duration::from_secs(360
 
 backend が確定している場合は `Database::open_local()` / `Database::open_relay()` も使えます。
 
+### トークンの失効
+
+発行済みトークンはユーザーごとの `token_version` 方式で失効できます。JWT には発行時点の
+バージョンが `ver` クレームとして埋め込まれ、検証時に DB の現在値と一致しない場合は
+無効扱いになります。
+
+- `db.revoke_tokens(user_id)` / `POST /users/{id}/revoke-tokens`（本人または管理者）で、
+  そのユーザーの発行済みトークンをすべて失効
+- パスワード変更・アカウント無効化・WebUI からのログアウトでも自動的に失効
+
+トレードオフ: 失効の単位はユーザー全体で、トークン個別の失効はできません（ログアウトは
+そのユーザーの全セッション・全トークンを無効化します）。検証のたびに SQLite への軽い
+参照が1回増えますが、deny-list 方式と違い失効レコードの掃除が不要で、サーバー側に増える
+状態はユーザー行の整数1つだけです。
+
+### ログイン試行のレート制限
+
+ログイン（`POST /token` の password / client_credentials 両グラント、および WebUI の
+ログイン）は、同一ユーザー名（またはクライアントID）での連続失敗が
+`WebConfig::login_max_failures` 回（デフォルト 5 回）に達すると、
+`WebConfig::login_lockout`（デフォルト 5 分）の間 `429 Too Many Requests` で
+拒否されます。成功するとカウントはリセットされます。失敗は `tracing` の
+warn レベルで記録されます。`login_max_failures: 0` で無効化できます。
+
+カウンタはプロセス内メモリ上にあるため、複数インスタンス構成では
+インスタンスごとに独立して数えられる点に注意してください。
+
 ### パスワードポリシー
 
 パスワードを設定するすべての経路（作成・更新・WebUI の登録／変更／リセット）で、
@@ -142,6 +169,7 @@ user-permission serve --password-min-len 12
 | GET | `/users/{id}` | ユーザー取得 | 必要 |
 | PATCH | `/users/{id}` | ユーザー更新 | 本人 or 管理者 |
 | DELETE | `/users/{id}` | ユーザー削除 | 本人 or 管理者 |
+| POST | `/users/{id}/revoke-tokens` | 発行済みトークンを全失効 | 本人 or 管理者 |
 | POST | `/groups` | グループ作成 | 管理者 |
 | GET | `/groups` | グループ一覧 | 必要 |
 | GET | `/groups/{id}` | グループ取得 | 必要 |
