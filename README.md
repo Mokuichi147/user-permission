@@ -30,9 +30,9 @@ async fn main() -> user_permission_core::Result<()> {
     // パスを渡すとローカル SQLite、URL を渡すと HTTP 中継になる
     let db = Database::open("app.db", Some("secret.key")).await?;
 
-    let alice = db.users().create("alice", "password123", "Alice", None).await?;
+    let alice = db.users().create("alice", "s3cret-pass", "Alice", None).await?;
     let token = db
-        .login("alice", "password123", Duration::from_secs(3600))
+        .login("alice", "s3cret-pass", Duration::from_secs(3600))
         .await?
         .expect("credentials");
     println!("token = {token}");
@@ -76,6 +76,8 @@ user-permission serve --host 0.0.0.0 --port 8001 --prefix /api --webui
 | `--prefix` | (なし) | APIルートプレフィックス（例: `/api`） |
 | `--webui` | 無効 | Web管理画面（HTMX+Tailwind）を有効化 |
 | `--webui-prefix` | `/ui` | 管理画面のURLプレフィックス |
+| `--cookie-secure` | 無効 | セッションCookieに `Secure` 属性を付与（HTTPS運用時は必ず有効化） |
+| `--password-min-len` | `8` | パスワードの最小文字数 |
 
 > **Web 管理画面の移植状況**: 現在はプレースホルダ画面のみ提供しています。HTMX/Tailwind ベースの完全な管理画面は今後のリリースで再実装予定です。当面は REST API を利用してください。
 
@@ -94,10 +96,67 @@ let db = Database::open("app.db", Some("secret.key")).await?;
 let db = Database::open("http://localhost:8001", None).await?;
 
 // リレー先へログインすると以後のリクエストにトークンが自動付与される
-let _token = db.login("alice", "password123", std::time::Duration::from_secs(3600)).await?;
+let _token = db.login("alice", "s3cret-pass", std::time::Duration::from_secs(3600)).await?;
 ```
 
 backend が確定している場合は `Database::open_local()` / `Database::open_relay()` も使えます。
+
+### トークンの失効
+
+発行済みトークンはユーザーごとの `token_version` 方式で失効できます。JWT には発行時点の
+バージョンが `ver` クレームとして埋め込まれ、検証時に DB の現在値と一致しない場合は
+無効扱いになります。
+
+- `db.revoke_tokens(user_id)` / `POST /users/{id}/revoke-tokens`（本人または管理者）で、
+  そのユーザーの発行済みトークンをすべて失効
+- パスワード変更・アカウント無効化・WebUI からのログアウトでも自動的に失効
+
+トレードオフ: 失効の単位はユーザー全体で、トークン個別の失効はできません（ログアウトは
+そのユーザーの全セッション・全トークンを無効化します）。検証のたびに SQLite への軽い
+参照が1回増えますが、deny-list 方式と違い失効レコードの掃除が不要で、サーバー側に増える
+状態はユーザー行の整数1つだけです。
+
+### ログイン試行のレート制限
+
+ログイン（`POST /token` の password / client_credentials 両グラント、および WebUI の
+ログイン）は、同一ユーザー名（またはクライアントID）での連続失敗が
+`WebConfig::login_max_failures` 回（デフォルト 5 回）に達すると、
+`WebConfig::login_lockout`（デフォルト 5 分）の間 `429 Too Many Requests` で
+拒否されます。成功するとカウントはリセットされます。失敗は `tracing` の
+warn レベルで記録されます。`login_max_failures: 0` で無効化できます。
+
+カウンタはプロセス内メモリ上にあるため、複数インスタンス構成では
+インスタンスごとに独立して数えられる点に注意してください。
+
+### パスワードポリシー
+
+パスワードを設定するすべての経路（作成・更新・WebUI の登録／変更／リセット）で、
+core 層の共通バリデーションが適用されます。
+
+- 最小長は既定 8文字（`MIN_PASSWORD_LEN`）、`PasswordPolicy` で変更可能
+- 1024バイト以下（`MAX_PASSWORD_LEN`、こちらは固定の安全上限で変更不可）
+- `password` や `12345678` などのよくあるパスワードは長さを満たしても拒否
+
+違反時は `Error::WeakPassword`（REST API では `400 Bad Request`）が返ります。
+`user_permission_core::validate_password()` で既定ポリシーの事前チェックもできます。
+
+最小長を変えたい場合は `Database::open_local_with_policy()` に `PasswordPolicy` を渡します。
+
+```rust
+use user_permission_core::{Database, PasswordPolicy};
+
+let policy = PasswordPolicy { min_len: 12 };
+let db = Database::open_local_with_policy("app.db", Some("secret.key"), policy).await?;
+```
+
+CLI サーバーでは `--password-min-len`（既定 8）で指定できます。
+
+```bash
+user-permission serve --password-min-len 12
+```
+
+リレー backend ではポリシーは中央サーバー側が権威を持ち、クライアント側では
+チェックしません（サーバーの `POST /users` / `PATCH /users/{id}` が拒否します）。
 
 ## REST API
 
@@ -111,6 +170,7 @@ backend が確定している場合は `Database::open_local()` / `Database::ope
 | GET | `/users/{id}` | ユーザー取得 | 本人 or 管理者※ |
 | PATCH | `/users/{id}` | ユーザー更新 | 本人 or 管理者 |
 | DELETE | `/users/{id}` | ユーザー削除 | 本人 or 管理者 |
+| POST | `/users/{id}/revoke-tokens` | 発行済みトークンを全失効 | 本人 or 管理者 |
 | POST | `/groups` | グループ作成 | 管理者 |
 | GET | `/groups` | グループ一覧 | 必要※ |
 | GET | `/groups/{id}` | グループ取得 | 所属メンバー or 管理者※ |

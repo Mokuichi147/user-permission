@@ -189,6 +189,7 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_user).patch(update_user).delete(delete_user),
         )
         .route("/users/:user_id/groups", get(list_user_groups))
+        .route("/users/:user_id/revoke-tokens", post(revoke_tokens))
         .route("/groups", post(create_group).get(list_groups))
         .route(
             "/groups/:group_id",
@@ -210,6 +211,20 @@ pub fn router() -> Router<Arc<AppState>> {
         )
 }
 
+/// Reject the request with 429 when the login-guard key is currently locked.
+fn ensure_not_locked(state: &AppState, key: &str) -> Result<(), ApiError> {
+    if let Some(remaining) = state.login_guard.check(key) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "too many failed login attempts; retry in {}s",
+                remaining.as_secs().max(1)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 async fn login(
     State(state): State<Arc<AppState>>,
     Form(form): Form<TokenForm>,
@@ -222,11 +237,23 @@ async fn login(
             let client_secret = form.client_secret.ok_or_else(|| {
                 ApiError::new(StatusCode::BAD_REQUEST, "client_secret is required")
             })?;
-            state
+            let guard_key = format!("client:{client_id}");
+            ensure_not_locked(&state, &guard_key)?;
+            match state
                 .db
                 .login_service(&client_id, &client_secret, state.config.token_expires)
                 .await?
-                .ok_or_else(|| ApiError::unauthorized("Invalid client credentials"))?
+            {
+                Some(token) => {
+                    state.login_guard.record_success(&guard_key);
+                    token
+                }
+                None => {
+                    let failures = state.login_guard.record_failure(&guard_key);
+                    tracing::warn!(client_id = %client_id, failures, "client-credentials login failed");
+                    return Err(ApiError::unauthorized("Invalid client credentials"));
+                }
+            }
         }
         Some("password") | None => {
             let username = form
@@ -235,11 +262,23 @@ async fn login(
             let password = form
                 .password
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "password is required"))?;
-            state
+            let guard_key = format!("user:{username}");
+            ensure_not_locked(&state, &guard_key)?;
+            match state
                 .db
                 .login(&username, &password, state.config.token_expires)
                 .await?
-                .ok_or_else(|| ApiError::unauthorized("Invalid username or password"))?
+            {
+                Some(token) => {
+                    state.login_guard.record_success(&guard_key);
+                    token
+                }
+                None => {
+                    let failures = state.login_guard.record_failure(&guard_key);
+                    tracing::warn!(username = %username, failures, "login failed");
+                    return Err(ApiError::unauthorized("Invalid username or password"));
+                }
+            }
         }
         Some(other) => {
             return Err(ApiError::new(
@@ -435,6 +474,27 @@ async fn delete_user(
         ));
     }
     if !state.db.users().delete(user_id, None).await? {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "User not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Invalidate every outstanding token for a user (their own, or any user's
+/// when called by an admin). The caller's current token is revoked too when
+/// targeting themselves.
+async fn revoke_tokens(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<i64>,
+    AuthUser(current): AuthUser,
+) -> Result<StatusCode, ApiError> {
+    let caller_is_admin = state.db.users().is_admin(current.id, None).await?;
+    if current.id != user_id && !caller_is_admin {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Admin privileges required",
+        ));
+    }
+    if !state.db.users().revoke_tokens(user_id, None).await? {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "User not found"));
     }
     Ok(StatusCode::NO_CONTENT)

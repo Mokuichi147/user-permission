@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use user_permission::{build_app, WebConfig};
-use user_permission_core::Database;
+use user_permission_core::{Database, PasswordPolicy, MIN_PASSWORD_LEN};
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +48,15 @@ enum Command {
         /// WebUI URL prefix
         #[arg(long = "webui-prefix", default_value = "/ui")]
         webui_prefix: String,
+
+        /// Set the Secure attribute on the WebUI session cookie (enable when
+        /// serving over HTTPS; leave off for http://localhost development)
+        #[arg(long = "cookie-secure")]
+        cookie_secure: bool,
+
+        /// Minimum password length enforced on every create/update path
+        #[arg(long = "password-min-len", default_value_t = MIN_PASSWORD_LEN)]
+        password_min_len: usize,
     },
 }
 
@@ -70,8 +79,13 @@ async fn main() -> anyhow::Result<()> {
             prefix,
             webui,
             webui_prefix,
+            cookie_secure,
+            password_min_len,
         } => {
-            let db = Database::open_local(&database, Some(&secret))
+            let policy = PasswordPolicy {
+                min_len: password_min_len,
+            };
+            let db = Database::open_local_with_policy(&database, Some(&secret), policy)
                 .await
                 .with_context(|| format!("opening database at {}", database.display()))?;
 
@@ -81,6 +95,8 @@ async fn main() -> anyhow::Result<()> {
                 webui_enabled: webui,
                 token_expires: Duration::from_secs(3600),
                 webui_token_expires: Duration::from_secs(86_400),
+                cookie_secure,
+                ..Default::default()
             };
             let app = build_app(db, config);
 

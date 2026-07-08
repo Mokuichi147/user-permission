@@ -212,12 +212,26 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-fn set_cookie_value(token: &str, max_age_secs: i64) -> String {
-    format!("{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}")
+fn set_cookie_value(token: &str, max_age_secs: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}{secure_attr}"
+    )
 }
 
-fn delete_cookie_value() -> String {
-    format!("{COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+fn delete_cookie_value(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("{COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{secure_attr}")
+}
+
+/// パスワード起因のエラーを WebUI 向けの日本語メッセージにする。
+fn password_error_message(err: &user_permission_core::Error) -> &'static str {
+    match err {
+        user_permission_core::Error::WeakPassword(_) => {
+            "パスワードは8文字以上で、推測されやすいものは使えません"
+        }
+        _ => "更新に失敗しました",
+    }
 }
 
 fn is_htmx(headers: &HeaderMap) -> bool {
@@ -352,14 +366,28 @@ struct LoginForm {
 async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) -> Response {
     let prefix = prefix(&state).to_string();
     let expires = state.config.webui_token_expires;
+    // API の /token と同じキーを使い、両経路合算で試行回数を制限する。
+    let guard_key = format!("user:{}", form.username);
+    if state.login_guard.check(&guard_key).is_some() {
+        return render_with_status(
+            LoginTemplate {
+                prefix: &prefix,
+                user: None,
+                is_admin: false,
+                error: Some("ログイン試行が多すぎます。しばらく待ってから再試行してください"),
+            },
+            StatusCode::TOO_MANY_REQUESTS,
+        );
+    }
     match state
         .db
         .login(&form.username, &form.password, expires)
         .await
     {
         Ok(Some(token)) => {
+            state.login_guard.record_success(&guard_key);
             let max_age = webui_token_secs(&state);
-            let cookie = set_cookie_value(&token, max_age);
+            let cookie = set_cookie_value(&token, max_age, state.config.cookie_secure);
             let target = format!("{prefix}/");
             (
                 StatusCode::SEE_OTHER,
@@ -370,22 +398,32 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
             )
                 .into_response()
         }
-        _ => render_with_status(
-            LoginTemplate {
-                prefix: &prefix,
-                user: None,
-                is_admin: false,
-                error: Some("ユーザー名またはパスワードが間違っています"),
-            },
-            StatusCode::OK,
-        ),
+        _ => {
+            let failures = state.login_guard.record_failure(&guard_key);
+            tracing::warn!(username = %form.username, failures, "webui login failed");
+            render_with_status(
+                LoginTemplate {
+                    prefix: &prefix,
+                    user: None,
+                    is_admin: false,
+                    error: Some("ユーザー名またはパスワードが間違っています"),
+                },
+                StatusCode::OK,
+            )
+        }
     }
 }
 
-async fn logout(State(state): State<Arc<AppState>>) -> Response {
+async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let prefix = prefix(&state).to_string();
     let target = format!("{prefix}/login");
-    let cookie = delete_cookie_value();
+    // Server-side revocation: bump the user's token_version so the cookie's
+    // JWT (and any other outstanding token of theirs) stops verifying, instead
+    // of merely deleting the cookie client-side.
+    if let Some(user) = current_user(&state, &headers).await {
+        let _ = state.db.users().revoke_tokens(user.id, None).await;
+    }
+    let cookie = delete_cookie_value(state.config.cookie_secure);
     (
         StatusCode::SEE_OTHER,
         [
@@ -433,6 +471,8 @@ async fn register_submit(
     {
         let msg = if err.is_unique_violation() {
             "そのユーザー名は既に使われています"
+        } else if matches!(err, user_permission_core::Error::WeakPassword(_)) {
+            "パスワードは8文字以上で、推測されやすいものは使えません"
         } else {
             "登録に失敗しました"
         };
@@ -452,7 +492,8 @@ async fn register_submit(
         .await
     {
         Ok(Some(token)) => {
-            let cookie = set_cookie_value(&token, webui_token_secs(&state));
+            let cookie =
+                set_cookie_value(&token, webui_token_secs(&state), state.config.cookie_secure);
             (
                 StatusCode::SEE_OTHER,
                 [
@@ -626,7 +667,7 @@ async fn me_password(
         .await
     {
         Ok(Some(_)) => {
-            let _ = state
+            let result = state
                 .db
                 .users()
                 .update(
@@ -638,6 +679,10 @@ async fn me_password(
                     None,
                 )
                 .await;
+            let (password_success, password_error) = match &result {
+                Ok(_) => (true, None),
+                Err(err) => (false, Some(password_error_message(err))),
+            };
             render(MeTemplate {
                 prefix: &prefix,
                 user: Some(&user),
@@ -645,8 +690,8 @@ async fn me_password(
                 my_groups: &my_groups,
                 profile_success: false,
                 profile_error: None,
-                password_success: true,
-                password_error: None,
+                password_success,
+                password_error,
             })
         }
         _ => render(MeTemplate {
@@ -756,7 +801,7 @@ async fn users_delete(
         Ok(true) => {
             if current.id == user_id {
                 let target = format!("{prefix}/login");
-                let cookie = delete_cookie_value();
+                let cookie = delete_cookie_value(state.config.cookie_secure);
                 (
                     StatusCode::OK,
                     [
@@ -1038,7 +1083,7 @@ async fn users_reset_password(
         Ok(None) => return (StatusCode::NOT_FOUND, "ユーザーが見つかりません").into_response(),
         Err(_) => return server_error_response(),
     };
-    let _ = state
+    let result = state
         .db
         .users()
         .update(
@@ -1050,6 +1095,10 @@ async fn users_reset_password(
             None,
         )
         .await;
+    let (password_success, password_error) = match &result {
+        Ok(_) => (true, None),
+        Err(err) => (false, Some(password_error_message(err))),
+    };
     let target_is_admin = state
         .db
         .users()
@@ -1072,8 +1121,8 @@ async fn users_reset_password(
         target_groups: &target_groups,
         profile_success: false,
         profile_error: None,
-        password_success: true,
-        password_error: None,
+        password_success,
+        password_error,
     })
 }
 
@@ -1374,4 +1423,24 @@ async fn group_remove_member(
 
 pub async fn placeholder() -> Response {
     redirect_to("/ui/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secure_attribute_follows_config() {
+        let set = set_cookie_value("tok", 60, true);
+        assert!(set.ends_with("; Secure"), "got: {set}");
+        assert!(set.contains("HttpOnly"));
+        assert!(set.contains("SameSite=Lax"));
+
+        let set_plain = set_cookie_value("tok", 60, false);
+        assert!(!set_plain.contains("Secure"), "got: {set_plain}");
+
+        let del = delete_cookie_value(true);
+        assert!(del.ends_with("; Secure"), "got: {del}");
+        assert!(!delete_cookie_value(false).contains("Secure"));
+    }
 }

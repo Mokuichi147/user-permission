@@ -8,6 +8,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::error::{Error, Result};
 use crate::group::GroupManager;
+use crate::password::PasswordPolicy;
 use crate::relay::RelayBackend;
 use crate::service_client::ServiceClientManager;
 use crate::token::TokenManager;
@@ -41,6 +42,7 @@ pub(crate) enum Backend {
 pub(crate) struct LocalBackend {
     pub pool: SqlitePool,
     pub token_manager: Option<TokenManager>,
+    pub password_policy: PasswordPolicy,
 }
 
 impl LocalBackend {
@@ -94,9 +96,25 @@ impl Database {
     /// Open a local SQLite database. If `secret_path` is provided, a `TokenManager` is
     /// initialised from that file (created if missing); otherwise calling
     /// `token_manager()` returns `Error::MissingTokenManager`.
+    ///
+    /// Uses the default [`PasswordPolicy`] (minimum
+    /// [`MIN_PASSWORD_LEN`](crate::MIN_PASSWORD_LEN) characters); use
+    /// [`open_local_with_policy`](Self::open_local_with_policy) to configure it.
     pub async fn open_local(
         db_path: impl AsRef<Path>,
         secret_path: Option<impl AsRef<Path>>,
+    ) -> Result<Self> {
+        Self::open_local_with_policy(db_path, secret_path, PasswordPolicy::default()).await
+    }
+
+    /// Like [`open_local`](Self::open_local), but with an explicit
+    /// [`PasswordPolicy`] (e.g. a custom minimum length) applied to every
+    /// password set through this `Database` (create / update / login-adjacent
+    /// paths that hash a new password).
+    pub async fn open_local_with_policy(
+        db_path: impl AsRef<Path>,
+        secret_path: Option<impl AsRef<Path>>,
+        password_policy: PasswordPolicy,
     ) -> Result<Self> {
         let path = db_path.as_ref();
         let opts = SqliteConnectOptions::new()
@@ -121,6 +139,7 @@ impl Database {
             backend: Arc::new(Backend::Local(LocalBackend {
                 pool,
                 token_manager,
+                password_policy,
             })),
         })
     }
@@ -253,6 +272,18 @@ impl Database {
                 let Some(id) = user_id else {
                     return Ok(None);
                 };
+                // Reject tokens minted before the user's last revocation: the
+                // `ver` claim must match the current `token_version` (tokens
+                // predating the column carry no `ver` and count as version 0).
+                let token_ver = claims.get("ver").and_then(Value::as_i64).unwrap_or(0);
+                let current_ver: Option<i64> =
+                    sqlx::query_scalar("SELECT token_version FROM users WHERE id = ?")
+                        .bind(id)
+                        .fetch_optional(&local.pool)
+                        .await?;
+                if current_ver != Some(token_ver) {
+                    return Ok(None);
+                }
                 match self.users().get_by_id(id, None).await? {
                     Some(user) if user.is_active => Ok(Some(Principal::User(user))),
                     _ => Ok(None),
@@ -260,6 +291,12 @@ impl Database {
             }
             Backend::Relay(relay) => relay.introspect(token).await,
         }
+    }
+
+    /// Revoke every token previously issued to `user_id` by bumping the user's
+    /// `token_version`; see [`UserManager::revoke_tokens`].
+    pub async fn revoke_tokens(&self, user_id: i64) -> Result<bool> {
+        self.users().revoke_tokens(user_id, None).await
     }
 
     /// Ensure an admin user exists (local backend only).
@@ -326,6 +363,22 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::query(include_str!("../migrations/0003_service_clients.sql"))
         .execute(pool)
         .await?;
+
+    // 0004: `users.token_version` for token revocation, ALTERed in for
+    // databases predating the column (0001 includes it on fresh databases).
+    let rows = sqlx::query("PRAGMA table_info(users)")
+        .fetch_all(pool)
+        .await?;
+    let has_token_version = rows.iter().any(|r| {
+        r.try_get::<String, _>("name")
+            .map(|n| n == "token_version")
+            .unwrap_or(false)
+    });
+    if !has_token_version {
+        sqlx::query("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
 
     Ok(())
 }

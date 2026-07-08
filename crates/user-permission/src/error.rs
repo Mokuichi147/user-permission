@@ -49,6 +49,7 @@ impl From<CoreError> for ApiError {
             }
             CoreError::MissingTokenManager => ApiError::internal("token manager not configured"),
             CoreError::InvalidArgument(msg) => ApiError::new(StatusCode::BAD_REQUEST, msg),
+            CoreError::WeakPassword(msg) => ApiError::new(StatusCode::BAD_REQUEST, msg),
             err if err.is_unique_violation() => {
                 ApiError::new(StatusCode::CONFLICT, err.to_string())
             }

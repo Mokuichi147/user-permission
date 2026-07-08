@@ -74,6 +74,7 @@ impl UserManager {
     ) -> Result<User> {
         match &*self.backend {
             Backend::Local(local) => {
+                local.password_policy.validate(password)?;
                 local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let hashed = hash(password)?;
@@ -224,6 +225,9 @@ impl UserManager {
     ) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
+                if let Some(p) = &update.password {
+                    local.password_policy.validate(p)?;
+                }
                 local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let mut fields: Vec<&str> = Vec::new();
@@ -247,6 +251,11 @@ impl UserManager {
                 }
                 if fields.is_empty() {
                     return self.get_by_id(user_id, token).await;
+                }
+                // Changing the password or deactivating the account revokes
+                // every previously issued token (see `resolve_principal`).
+                if update.password.is_some() || update.is_active == Some(false) {
+                    fields.push("token_version = token_version + 1");
                 }
                 fields.push("updated_at = datetime('now')");
                 let sql = format!("UPDATE users SET {} WHERE id = ?", fields.join(", "));
@@ -305,6 +314,37 @@ impl UserManager {
                     .request_no_content(
                         "DELETE",
                         &format!("/users/{user_id}"),
+                        None,
+                        bearer.as_deref(),
+                    )
+                    .await
+            }
+        }
+    }
+
+    /// Revoke every token previously issued to `user_id` by bumping the user's
+    /// `token_version`. Outstanding JWTs carry the old version in their `ver`
+    /// claim and are rejected on the next verification. Returns `false` if the
+    /// user does not exist.
+    pub async fn revoke_tokens(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
+        match &*self.backend {
+            Backend::Local(local) => {
+                local.verify_if_present(token)?;
+                let res = sqlx::query(
+                    "UPDATE users SET token_version = token_version + 1, \
+                     updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(user_id)
+                .execute(&local.pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Relay(relay) => {
+                let bearer = relay.resolve_auth(token);
+                relay
+                    .request_no_content(
+                        "POST",
+                        &format!("/users/{user_id}/revoke-tokens"),
                         None,
                         bearer.as_deref(),
                     )
@@ -471,9 +511,11 @@ impl UserManager {
                     return Ok(None);
                 }
                 let user = User::from_row(&row)?;
+                let token_version: i64 = row.try_get("token_version")?;
                 let is_admin = self.is_admin(user.id, None).await?;
                 let mut extra = Map::new();
                 extra.insert("is_admin".into(), Value::Bool(is_admin));
+                extra.insert("ver".into(), Value::Number(token_version.into()));
                 let token = token_manager.create_token(
                     user.id,
                     &user.username,
