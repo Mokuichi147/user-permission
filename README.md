@@ -166,24 +166,36 @@ user-permission serve --password-min-len 12
 | POST | `/introspect` | トークンを principal（ユーザー / サービス）に解決 | 必要 |
 | GET | `/me` | 現在のユーザー情報（`is_admin` を含む） | 必要 |
 | POST | `/users` | ユーザー作成 | 不要 |
-| GET | `/users` | ユーザー一覧（`?username=...` で username 完全一致検索） | 必要 |
-| GET | `/users/{id}` | ユーザー取得 | 必要 |
+| GET | `/users` | ユーザー一覧（`?username=...` で username 完全一致検索） | 必要※ |
+| GET | `/users/{id}` | ユーザー取得 | 本人 or 管理者※ |
 | PATCH | `/users/{id}` | ユーザー更新 | 本人 or 管理者 |
 | DELETE | `/users/{id}` | ユーザー削除 | 本人 or 管理者 |
 | POST | `/users/{id}/revoke-tokens` | 発行済みトークンを全失効 | 本人 or 管理者 |
 | POST | `/groups` | グループ作成 | 管理者 |
-| GET | `/groups` | グループ一覧 | 必要 |
-| GET | `/groups/{id}` | グループ取得 | 必要 |
+| GET | `/groups` | グループ一覧 | 必要※ |
+| GET | `/groups/{id}` | グループ取得 | 所属メンバー or 管理者※ |
 | PATCH | `/groups/{id}` | グループ更新 | 管理者 |
 | DELETE | `/groups/{id}` | グループ削除 | 管理者 |
 | POST | `/groups/{id}/members` | メンバー追加 | 管理者 |
 | DELETE | `/groups/{id}/members/{user_id}` | メンバー削除 | 管理者 |
-| GET | `/groups/{id}/members` | メンバー一覧 | 必要 |
-| GET | `/users/{id}/groups` | 所属グループ一覧 | 必要 |
+| GET | `/groups/{id}/members` | メンバー一覧 | 所属メンバー or 管理者※ |
+| GET | `/users/{id}/groups` | 所属グループ一覧 | 本人 or 管理者※ |
 | POST | `/service-clients` | サービスクライアント作成（secret を返却） | 管理者 |
 | GET | `/service-clients` | サービスクライアント一覧 | 管理者 |
 | DELETE | `/service-clients/{id}` | サービスクライアント削除 | 管理者 |
 | POST | `/service-clients/{id}/rotate` | secret の再生成 | 管理者 |
+
+### 閲覧範囲（最小権限）
+
+※ の付いた読み取り系エンドポイントには次のポリシーが適用されます。
+
+- **一般ユーザー**: 閲覧できるのは自分自身と自分の所属グループのみ。
+  `GET /users` は自分1件だけを返し、他ユーザー・非所属グループへのアクセスは
+  `403 Forbidden` になります（WebUI も同様で、ユーザー一覧は管理者専用）
+- **管理者**: ディレクトリ全体を閲覧可能
+- **サービストークン**: `users:read` / `groups:read` スコープを持つ
+  client_credentials トークンはディレクトリ全体を閲覧可能。アプリケーションから
+  ユーザー基盤全体を参照したい場合はこちらを使ってください
 
 ## 管理者ロール
 

@@ -313,6 +313,34 @@ async fn introspect(
     Ok(Json(principal))
 }
 
+/// ディレクトリ読み取りの閲覧範囲。サービストークン（スコープは抽出側で検証
+/// 済み）と管理者ユーザーは全体を閲覧でき、一般ユーザーは自分自身と所属
+/// グループのみに制限される。
+enum ReadAccess {
+    Full,
+    SelfOnly(User),
+}
+
+async fn read_access(state: &AppState, principal: Principal) -> Result<ReadAccess, ApiError> {
+    match principal {
+        Principal::Service { .. } => Ok(ReadAccess::Full),
+        Principal::User(user) => {
+            if state.db.users().is_admin(user.id, None).await? {
+                Ok(ReadAccess::Full)
+            } else {
+                Ok(ReadAccess::SelfOnly(user))
+            }
+        }
+    }
+}
+
+fn forbidden_directory() -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Insufficient permissions to view other users or groups",
+    )
+}
+
 async fn me(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -346,18 +374,25 @@ async fn create_user(
 
 async fn list_users(
     State(state): State<Arc<AppState>>,
-    UsersRead(_): UsersRead,
+    UsersRead(principal): UsersRead,
     Query(query): Query<UserListQuery>,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
-    let users = match query.username {
-        Some(username) => state
-            .db
-            .users()
-            .get_by_username(&username, None)
-            .await?
-            .into_iter()
-            .collect(),
-        None => state.db.users().list_all(None).await?,
+    let users = match read_access(&state, principal).await? {
+        ReadAccess::Full => match query.username {
+            Some(username) => state
+                .db
+                .users()
+                .get_by_username(&username, None)
+                .await?
+                .into_iter()
+                .collect(),
+            None => state.db.users().list_all(None).await?,
+        },
+        // 一般ユーザーには自分自身だけを返す（他ユーザー名の探索を防ぐ）。
+        ReadAccess::SelfOnly(me) => match &query.username {
+            Some(username) if *username != me.username => vec![],
+            _ => vec![me],
+        },
     };
     let mut out = Vec::with_capacity(users.len());
     for u in users {
@@ -370,8 +405,13 @@ async fn list_users(
 async fn get_user(
     State(state): State<Arc<AppState>>,
     Path(user_id): Path<i64>,
-    UsersRead(_): UsersRead,
+    UsersRead(principal): UsersRead,
 ) -> Result<Json<UserResponse>, ApiError> {
+    if let ReadAccess::SelfOnly(me) = read_access(&state, principal).await? {
+        if me.id != user_id {
+            return Err(forbidden_directory());
+        }
+    }
     let user = state
         .db
         .users()
@@ -463,8 +503,13 @@ async fn revoke_tokens(
 async fn list_user_groups(
     State(state): State<Arc<AppState>>,
     Path(user_id): Path<i64>,
-    UsersRead(_): UsersRead,
+    UsersRead(principal): UsersRead,
 ) -> Result<Json<Vec<GroupResponse>>, ApiError> {
+    if let ReadAccess::SelfOnly(me) = read_access(&state, principal).await? {
+        if me.id != user_id {
+            return Err(forbidden_directory());
+        }
+    }
     let groups = state.db.groups().get_user_groups(user_id, None).await?;
     Ok(Json(groups.into_iter().map(Into::into).collect()))
 }
@@ -491,17 +536,42 @@ async fn create_group(
 
 async fn list_groups(
     State(state): State<Arc<AppState>>,
-    GroupsRead(_): GroupsRead,
+    GroupsRead(principal): GroupsRead,
 ) -> Result<Json<Vec<GroupResponse>>, ApiError> {
-    let groups = state.db.groups().list_all(None).await?;
+    let groups = match read_access(&state, principal).await? {
+        ReadAccess::Full => state.db.groups().list_all(None).await?,
+        ReadAccess::SelfOnly(me) => state.db.groups().get_user_groups(me.id, None).await?,
+    };
     Ok(Json(groups.into_iter().map(Into::into).collect()))
+}
+
+/// 一般ユーザーが対象グループのメンバーでなければ 403 を返す。
+async fn ensure_group_visible(
+    state: &AppState,
+    principal: Principal,
+    group_id: i64,
+) -> Result<(), ApiError> {
+    if let ReadAccess::SelfOnly(me) = read_access(state, principal).await? {
+        let member = state
+            .db
+            .groups()
+            .get_user_groups(me.id, None)
+            .await?
+            .iter()
+            .any(|g| g.id == group_id);
+        if !member {
+            return Err(forbidden_directory());
+        }
+    }
+    Ok(())
 }
 
 async fn get_group(
     State(state): State<Arc<AppState>>,
     Path(group_id): Path<i64>,
-    GroupsRead(_): GroupsRead,
+    GroupsRead(principal): GroupsRead,
 ) -> Result<Json<GroupResponse>, ApiError> {
+    ensure_group_visible(&state, principal, group_id).await?;
     let group = state
         .db
         .groups()
@@ -587,8 +657,9 @@ async fn remove_member(
 async fn list_members(
     State(state): State<Arc<AppState>>,
     Path(group_id): Path<i64>,
-    GroupsRead(_): GroupsRead,
+    GroupsRead(principal): GroupsRead,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
+    ensure_group_visible(&state, principal, group_id).await?;
     let members = state.db.groups().get_members(group_id, None).await?;
     let mut out = Vec::with_capacity(members.len());
     for m in members {

@@ -16,13 +16,15 @@ pub struct AuthUser(pub User);
 /// Like `AuthUser` but additionally enforces that the user is in an admin group.
 pub struct AdminUser(pub User);
 
-/// Read access to the user directory: any authenticated user, or a service
-/// client holding the `users:read` scope.
-pub struct UsersRead(#[allow(dead_code)] pub Principal);
+/// Read access to the user directory: an authenticated user (handlers narrow
+/// non-admins to their own record), or a service client holding the
+/// `users:read` scope.
+pub struct UsersRead(pub Principal);
 
-/// Read access to groups and membership: any authenticated user, or a service
-/// client holding the `groups:read` scope.
-pub struct GroupsRead(#[allow(dead_code)] pub Principal);
+/// Read access to groups and membership: an authenticated user (handlers
+/// narrow non-admins to groups they belong to), or a service client holding
+/// the `groups:read` scope.
+pub struct GroupsRead(pub Principal);
 
 const COOKIE_NAME: &str = "up_token";
 

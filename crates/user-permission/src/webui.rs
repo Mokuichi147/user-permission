@@ -721,6 +721,11 @@ async fn users_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     let Some(user) = current_user(&state, &headers).await else {
         return redirect_to_login(&prefix, is_htmx(&headers));
     };
+    // ユーザー一覧はディレクトリ全体の開示になるため管理者専用。
+    // 一般ユーザーは自分のプロフィールへ誘導する。
+    if !user.is_admin {
+        return redirect_to(&format!("{prefix}/me"));
+    }
     let raw = match state.db.users().list_all(None).await {
         Ok(v) => v,
         Err(_) => return server_error_response(),
@@ -1130,9 +1135,17 @@ async fn groups_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     let Some(user) = current_user(&state, &headers).await else {
         return redirect_to_login(&prefix, is_htmx(&headers));
     };
-    let groups = match state.db.groups().list_all(None).await {
-        Ok(v) => v,
-        Err(_) => return server_error_response(),
+    // 管理者は全グループ、一般ユーザーは所属グループのみ表示する。
+    let groups = if user.is_admin {
+        match state.db.groups().list_all(None).await {
+            Ok(v) => v,
+            Err(_) => return server_error_response(),
+        }
+    } else {
+        match state.db.groups().get_user_groups(user.id, None).await {
+            Ok(v) => v,
+            Err(_) => return server_error_response(),
+        }
     };
     render(GroupsTemplate {
         prefix: &prefix,
@@ -1193,6 +1206,21 @@ async fn group_detail(
     let Some(user) = current_user(&state, &headers).await else {
         return redirect_to_login(&prefix, is_htmx(&headers));
     };
+    // 一般ユーザーは自分が所属するグループの詳細のみ閲覧できる。
+    if !user.is_admin {
+        let is_member = state
+            .db
+            .groups()
+            .get_user_groups(user.id, None)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|g| g.id == group_id);
+        if !is_member {
+            return (StatusCode::FORBIDDEN, "このグループを閲覧する権限がありません")
+                .into_response();
+        }
+    }
     let group = match state.db.groups().get_by_id(group_id, None).await {
         Ok(Some(g)) => g,
         Ok(None) => return (StatusCode::NOT_FOUND, "グループが見つかりません").into_response(),
