@@ -10,10 +10,10 @@ async fn spawn_server() -> (String, tempfile::TempDir) {
         .await
         .expect("open db");
     db.users()
-        .create("admin", "pw", "Admin", None)
+        .create("admin", "pw-123456", "Admin", None)
         .await
         .unwrap();
-    db.users().create("bob", "pw", "Bob", None).await.unwrap();
+    db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
 
     let config = WebConfig {
         webui_enabled: true,
@@ -50,9 +50,9 @@ async fn locks_out_after_consecutive_failures() {
         assert_eq!(try_login(&client, &base, "bob", "wrong").await, 401);
     }
     // ロック中は正しいパスワードでも 429
-    assert_eq!(try_login(&client, &base, "bob", "pw").await, 429);
+    assert_eq!(try_login(&client, &base, "bob", "pw-123456").await, 429);
     // 他ユーザーには影響しない
-    assert_eq!(try_login(&client, &base, "admin", "pw").await, 200);
+    assert_eq!(try_login(&client, &base, "admin", "pw-123456").await, 200);
 }
 
 #[tokio::test]
@@ -62,10 +62,10 @@ async fn success_resets_failure_count() {
 
     assert_eq!(try_login(&client, &base, "bob", "wrong").await, 401);
     assert_eq!(try_login(&client, &base, "bob", "wrong").await, 401);
-    assert_eq!(try_login(&client, &base, "bob", "pw").await, 200);
+    assert_eq!(try_login(&client, &base, "bob", "pw-123456").await, 200);
     // 成功でリセットされるので、再び閾値まで失敗できる
     assert_eq!(try_login(&client, &base, "bob", "wrong").await, 401);
-    assert_eq!(try_login(&client, &base, "bob", "pw").await, 200);
+    assert_eq!(try_login(&client, &base, "bob", "pw-123456").await, 200);
 }
 
 #[tokio::test]
@@ -82,7 +82,7 @@ async fn webui_login_shares_the_same_guard() {
     }
     let resp = client
         .post(format!("{base}/ui/login"))
-        .form(&[("username", "bob"), ("password", "pw")])
+        .form(&[("username", "bob"), ("password", "pw-123456")])
         .send()
         .await
         .unwrap();

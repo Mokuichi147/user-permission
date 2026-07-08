@@ -220,6 +220,16 @@ fn delete_cookie_value() -> String {
     format!("{COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
 }
 
+/// パスワード起因のエラーを WebUI 向けの日本語メッセージにする。
+fn password_error_message(err: &user_permission_core::Error) -> &'static str {
+    match err {
+        user_permission_core::Error::WeakPassword(_) => {
+            "パスワードは8文字以上で、推測されやすいものは使えません"
+        }
+        _ => "更新に失敗しました",
+    }
+}
+
 fn is_htmx(headers: &HeaderMap) -> bool {
     headers
         .get(&HX_REQUEST)
@@ -457,6 +467,8 @@ async fn register_submit(
     {
         let msg = if err.is_unique_violation() {
             "そのユーザー名は既に使われています"
+        } else if matches!(err, user_permission_core::Error::WeakPassword(_)) {
+            "パスワードは8文字以上で、推測されやすいものは使えません"
         } else {
             "登録に失敗しました"
         };
@@ -650,7 +662,7 @@ async fn me_password(
         .await
     {
         Ok(Some(_)) => {
-            let _ = state
+            let result = state
                 .db
                 .users()
                 .update(
@@ -662,6 +674,10 @@ async fn me_password(
                     None,
                 )
                 .await;
+            let (password_success, password_error) = match &result {
+                Ok(_) => (true, None),
+                Err(err) => (false, Some(password_error_message(err))),
+            };
             render(MeTemplate {
                 prefix: &prefix,
                 user: Some(&user),
@@ -669,8 +685,8 @@ async fn me_password(
                 my_groups: &my_groups,
                 profile_success: false,
                 profile_error: None,
-                password_success: true,
-                password_error: None,
+                password_success,
+                password_error,
             })
         }
         _ => render(MeTemplate {
@@ -1057,7 +1073,7 @@ async fn users_reset_password(
         Ok(None) => return (StatusCode::NOT_FOUND, "ユーザーが見つかりません").into_response(),
         Err(_) => return server_error_response(),
     };
-    let _ = state
+    let result = state
         .db
         .users()
         .update(
@@ -1069,6 +1085,10 @@ async fn users_reset_password(
             None,
         )
         .await;
+    let (password_success, password_error) = match &result {
+        Ok(_) => (true, None),
+        Err(err) => (false, Some(password_error_message(err))),
+    };
     let target_is_admin = state
         .db
         .users()
@@ -1091,8 +1111,8 @@ async fn users_reset_password(
         target_groups: &target_groups,
         profile_success: false,
         profile_error: None,
-        password_success: true,
-        password_error: None,
+        password_success,
+        password_error,
     })
 }
 

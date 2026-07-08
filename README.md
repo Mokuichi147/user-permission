@@ -30,9 +30,9 @@ async fn main() -> user_permission_core::Result<()> {
     // パスを渡すとローカル SQLite、URL を渡すと HTTP 中継になる
     let db = Database::open("app.db", Some("secret.key")).await?;
 
-    let alice = db.users().create("alice", "password123", "Alice", None).await?;
+    let alice = db.users().create("alice", "s3cret-pass", "Alice", None).await?;
     let token = db
-        .login("alice", "password123", Duration::from_secs(3600))
+        .login("alice", "s3cret-pass", Duration::from_secs(3600))
         .await?
         .expect("credentials");
     println!("token = {token}");
@@ -76,6 +76,7 @@ user-permission serve --host 0.0.0.0 --port 8001 --prefix /api --webui
 | `--prefix` | (なし) | APIルートプレフィックス（例: `/api`） |
 | `--webui` | 無効 | Web管理画面（HTMX+Tailwind）を有効化 |
 | `--webui-prefix` | `/ui` | 管理画面のURLプレフィックス |
+| `--password-min-len` | `8` | パスワードの最小文字数 |
 
 > **Web 管理画面の移植状況**: 現在はプレースホルダ画面のみ提供しています。HTMX/Tailwind ベースの完全な管理画面は今後のリリースで再実装予定です。当面は REST API を利用してください。
 
@@ -94,7 +95,7 @@ let db = Database::open("app.db", Some("secret.key")).await?;
 let db = Database::open("http://localhost:8001", None).await?;
 
 // リレー先へログインすると以後のリクエストにトークンが自動付与される
-let _token = db.login("alice", "password123", std::time::Duration::from_secs(3600)).await?;
+let _token = db.login("alice", "s3cret-pass", std::time::Duration::from_secs(3600)).await?;
 ```
 
 backend が確定している場合は `Database::open_local()` / `Database::open_relay()` も使えます。
@@ -125,6 +126,36 @@ warn レベルで記録されます。`login_max_failures: 0` で無効化でき
 
 カウンタはプロセス内メモリ上にあるため、複数インスタンス構成では
 インスタンスごとに独立して数えられる点に注意してください。
+
+### パスワードポリシー
+
+パスワードを設定するすべての経路（作成・更新・WebUI の登録／変更／リセット）で、
+core 層の共通バリデーションが適用されます。
+
+- 最小長は既定 8文字（`MIN_PASSWORD_LEN`）、`PasswordPolicy` で変更可能
+- 1024バイト以下（`MAX_PASSWORD_LEN`、こちらは固定の安全上限で変更不可）
+- `password` や `12345678` などのよくあるパスワードは長さを満たしても拒否
+
+違反時は `Error::WeakPassword`（REST API では `400 Bad Request`）が返ります。
+`user_permission_core::validate_password()` で既定ポリシーの事前チェックもできます。
+
+最小長を変えたい場合は `Database::open_local_with_policy()` に `PasswordPolicy` を渡します。
+
+```rust
+use user_permission_core::{Database, PasswordPolicy};
+
+let policy = PasswordPolicy { min_len: 12 };
+let db = Database::open_local_with_policy("app.db", Some("secret.key"), policy).await?;
+```
+
+CLI サーバーでは `--password-min-len`（既定 8）で指定できます。
+
+```bash
+user-permission serve --password-min-len 12
+```
+
+リレー backend ではポリシーは中央サーバー側が権威を持ち、クライアント側では
+チェックしません（サーバーの `POST /users` / `PATCH /users/{id}` が拒否します）。
 
 ## REST API
 

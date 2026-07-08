@@ -10,8 +10,8 @@ async fn spawn_server() -> (String, tempfile::TempDir) {
         .expect("open db");
 
     // First user becomes admin; create a couple of users to search for.
-    db.users().create("alice", "pw", "Alice", None).await.unwrap();
-    db.users().create("bob", "pw", "Bob", None).await.unwrap();
+    db.users().create("alice", "pw-123456", "Alice", None).await.unwrap();
+    db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
 
     let app = build_app(db, WebConfig::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -29,7 +29,7 @@ async fn relay_get_by_username_resolves_user() {
 
     let relay = Database::open_relay(&base_url).unwrap();
     relay
-        .login("alice", "pw", std::time::Duration::from_secs(3600))
+        .login("alice", "pw-123456", std::time::Duration::from_secs(3600))
         .await
         .unwrap()
         .expect("login should succeed");

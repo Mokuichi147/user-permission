@@ -11,9 +11,9 @@ async fn spawn_server() -> (String, i64, tempfile::TempDir) {
         .await
         .expect("open db");
 
-    db.users().create("alice", "pw", "Alice", None).await.unwrap();
+    db.users().create("alice", "pw-123456", "Alice", None).await.unwrap();
     db.users().set_admin(1, true, None).await.unwrap();
-    let bob = db.users().create("bob", "pw", "Bob", None).await.unwrap();
+    let bob = db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
 
     let app = build_app(db, WebConfig::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -30,7 +30,7 @@ async fn relay_admin_operations_round_trip() {
     let (base_url, bob_id, _dir) = spawn_server().await;
     let relay = Database::open_relay(&base_url).unwrap();
     let token = relay
-        .login("alice", "pw", Duration::from_secs(3600))
+        .login("alice", "pw-123456", Duration::from_secs(3600))
         .await
         .unwrap()
         .expect("admin login");

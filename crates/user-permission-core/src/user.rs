@@ -74,6 +74,7 @@ impl UserManager {
     ) -> Result<User> {
         match &*self.backend {
             Backend::Local(local) => {
+                local.password_policy.validate(password)?;
                 local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let hashed = hash(password)?;
@@ -224,6 +225,9 @@ impl UserManager {
     ) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
+                if let Some(p) = &update.password {
+                    local.password_policy.validate(p)?;
+                }
                 local.verify_if_present(token)?;
                 let pool = &local.pool;
                 let mut fields: Vec<&str> = Vec::new();

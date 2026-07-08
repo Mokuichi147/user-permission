@@ -30,6 +30,9 @@ mod user;
 pub use database::{Database, Principal};
 pub use error::{Error, Result};
 pub use group::{Group, GroupManager, GroupUpdate};
+pub use password::{
+    validate as validate_password, PasswordPolicy, MAX_PASSWORD_LEN, MIN_PASSWORD_LEN,
+};
 pub use service_client::{
     validate_scopes, ServiceClient, ServiceClientManager, ALL_SCOPES, SCOPE_GROUPS_READ,
     SCOPE_USERS_READ,
