@@ -212,12 +212,16 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-fn set_cookie_value(token: &str, max_age_secs: i64) -> String {
-    format!("{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}")
+fn set_cookie_value(token: &str, max_age_secs: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}{secure_attr}"
+    )
 }
 
-fn delete_cookie_value() -> String {
-    format!("{COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+fn delete_cookie_value(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("{COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{secure_attr}")
 }
 
 /// パスワード起因のエラーを WebUI 向けの日本語メッセージにする。
@@ -383,7 +387,7 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
         Ok(Some(token)) => {
             state.login_guard.record_success(&guard_key);
             let max_age = webui_token_secs(&state);
-            let cookie = set_cookie_value(&token, max_age);
+            let cookie = set_cookie_value(&token, max_age, state.config.cookie_secure);
             let target = format!("{prefix}/");
             (
                 StatusCode::SEE_OTHER,
@@ -419,7 +423,7 @@ async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     if let Some(user) = current_user(&state, &headers).await {
         let _ = state.db.users().revoke_tokens(user.id, None).await;
     }
-    let cookie = delete_cookie_value();
+    let cookie = delete_cookie_value(state.config.cookie_secure);
     (
         StatusCode::SEE_OTHER,
         [
@@ -488,7 +492,8 @@ async fn register_submit(
         .await
     {
         Ok(Some(token)) => {
-            let cookie = set_cookie_value(&token, webui_token_secs(&state));
+            let cookie =
+                set_cookie_value(&token, webui_token_secs(&state), state.config.cookie_secure);
             (
                 StatusCode::SEE_OTHER,
                 [
@@ -791,7 +796,7 @@ async fn users_delete(
         Ok(true) => {
             if current.id == user_id {
                 let target = format!("{prefix}/login");
-                let cookie = delete_cookie_value();
+                let cookie = delete_cookie_value(state.config.cookie_secure);
                 (
                     StatusCode::OK,
                     [
@@ -1390,4 +1395,24 @@ async fn group_remove_member(
 
 pub async fn placeholder() -> Response {
     redirect_to("/ui/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secure_attribute_follows_config() {
+        let set = set_cookie_value("tok", 60, true);
+        assert!(set.ends_with("; Secure"), "got: {set}");
+        assert!(set.contains("HttpOnly"));
+        assert!(set.contains("SameSite=Lax"));
+
+        let set_plain = set_cookie_value("tok", 60, false);
+        assert!(!set_plain.contains("Secure"), "got: {set_plain}");
+
+        let del = delete_cookie_value(true);
+        assert!(del.ends_with("; Secure"), "got: {del}");
+        assert!(!delete_cookie_value(false).contains("Secure"));
+    }
 }
