@@ -245,7 +245,7 @@ async fn revoke_tokens_invalidates_existing_token() {
     assert!(db.resolve_principal(&token2).await.unwrap().is_some());
 
     // Unknown user id → false.
-    assert!(!db.revoke_tokens(9999).await.unwrap());
+    assert!(!db.revoke_tokens(uuid::Uuid::now_v7()).await.unwrap());
 }
 
 #[tokio::test]
@@ -434,6 +434,124 @@ async fn legacy_db_missing_is_admin_column() {
     let alice = db.users().create("alice", "pw-123456", "", None).await.unwrap();
     // alice is the first user → automatically admin
     assert!(db.users().is_admin(alice.id, None).await.unwrap());
+}
+
+#[tokio::test]
+async fn uuid_migration_preserves_users_and_memberships() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("legacy.db");
+
+    // 旧スキーマ (INTEGER 連番 id、token_version なし) の DB を用意する。
+    let conn = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db_path.display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE users (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            username TEXT NOT NULL UNIQUE,\
+            password_hash TEXT NOT NULL,\
+            display_name TEXT NOT NULL DEFAULT '',\
+            is_active INTEGER NOT NULL DEFAULT 1,\
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),\
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))\
+        )",
+    )
+    .execute(&conn)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE groups (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            name TEXT NOT NULL UNIQUE,\
+            description TEXT NOT NULL DEFAULT '',\
+            is_admin INTEGER NOT NULL DEFAULT 0,\
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),\
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))\
+        )",
+    )
+    .execute(&conn)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE user_groups (\
+            user_id INTEGER NOT NULL,\
+            group_id INTEGER NOT NULL,\
+            joined_at TEXT NOT NULL DEFAULT (datetime('now')),\
+            PRIMARY KEY (user_id, group_id),\
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE\
+        )",
+    )
+    .execute(&conn)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO users (username, password_hash) VALUES ('alice', 'h1'), ('bob', 'h2')")
+        .execute(&conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO groups (name, is_admin) VALUES ('admin', 1), ('editors', 0)")
+        .execute(&conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_groups (user_id, group_id) VALUES (1, 1), (2, 2)")
+        .execute(&conn)
+        .await
+        .unwrap();
+    conn.close().await;
+
+    // 新バージョンで開くと users.id が UUID 化され、所属も引き継がれる。
+    let db = Database::open_local(&db_path, None::<&str>).await.unwrap();
+    let alice = db
+        .users()
+        .get_by_username("alice", None)
+        .await
+        .unwrap()
+        .expect("alice survives migration");
+    let bob = db
+        .users()
+        .get_by_username("bob", None)
+        .await
+        .unwrap()
+        .expect("bob survives migration");
+    assert_ne!(alice.id, bob.id);
+    assert!(db.users().is_admin(alice.id, None).await.unwrap());
+    assert!(!db.users().is_admin(bob.id, None).await.unwrap());
+    let bob_groups = db.groups().get_user_groups(bob.id, None).await.unwrap();
+    assert_eq!(bob_groups.len(), 1);
+    assert_eq!(bob_groups[0].name, "editors");
+
+    // バックアップファイルが作成されている。
+    assert!(dir.path().join("legacy.db.pre-uuid.bak").exists());
+
+    // 再オープンしても id は変わらない(マイグレーションは一度きり)。
+    db.close().await.unwrap();
+    let db2 = Database::open_local(&db_path, None::<&str>).await.unwrap();
+    let alice2 = db2
+        .users()
+        .get_by_username("alice", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice2.id, alice.id);
+}
+
+#[tokio::test]
+async fn server_id_is_stable_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db = Database::open_local(&db_path, None::<&str>).await.unwrap();
+    let first = db.server_id().await.unwrap();
+    assert!(uuid::Uuid::parse_str(&first).is_ok());
+    db.close().await.unwrap();
+
+    let db2 = Database::open_local(&db_path, None::<&str>).await.unwrap();
+    assert_eq!(db2.server_id().await.unwrap(), first);
+
+    // 別の DB は別の server_id を持つ。
+    let other = Database::open_local(dir.path().join("other.db"), None::<&str>)
+        .await
+        .unwrap();
+    assert_ne!(other.server_id().await.unwrap(), first);
 }
 
 #[tokio::test]

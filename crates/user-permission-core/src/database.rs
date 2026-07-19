@@ -43,6 +43,9 @@ pub(crate) struct LocalBackend {
     pub pool: SqlitePool,
     pub token_manager: Option<TokenManager>,
     pub password_policy: PasswordPolicy,
+    /// このデータベース(=発行元サーバー)を一意に識別する UUID。初回オープン時に
+    /// 生成され `meta` テーブルに永続化される。JWT の `iss` クレームとして使う。
+    pub server_id: String,
 }
 
 impl LocalBackend {
@@ -128,10 +131,14 @@ impl Database {
             .connect_with(opts)
             .await?;
 
-        run_migrations(&pool).await?;
+        run_migrations(&pool, path).await?;
+
+        let server_id = load_or_create_server_id(&pool).await?;
 
         let token_manager = match secret_path {
-            Some(p) => Some(TokenManager::from_file(p, Algorithm::HS256)?),
+            Some(p) => {
+                Some(TokenManager::from_file(p, Algorithm::HS256)?.with_issuer(&server_id))
+            }
             None => None,
         };
 
@@ -140,6 +147,7 @@ impl Database {
                 pool,
                 token_manager,
                 password_policy,
+                server_id,
             })),
         })
     }
@@ -147,6 +155,22 @@ impl Database {
     /// Open an HTTP relay backend pointing at a remote UserPermission server.
     pub fn open_relay(url: impl AsRef<str>) -> Result<Self> {
         let backend = RelayBackend::new(url.as_ref())?;
+        Ok(Self {
+            backend: Arc::new(Backend::Relay(backend)),
+        })
+    }
+
+    /// [`open_relay`](Self::open_relay) と同様だが、接続先サーバーの
+    /// server_id を事前に pin する。ログインや introspect の応答に含まれる
+    /// server_id が一致しない場合(=リレー先を別サーバーに切り替えた場合)、
+    /// 内部トークンを破棄して [`Error::RelayServerMismatch`] を返す。
+    ///
+    /// クライアントアプリは初回接続時に [`server_id`](Self::server_id) で取得した
+    /// 値を永続化し、次回以降この関数に渡すことで「同じ URL でも中身が別サーバー
+    /// に変わった」「別サーバーの同名ユーザーに誤ってログインした」事故を防げる。
+    pub fn open_relay_pinned(url: impl AsRef<str>, expected_server_id: &str) -> Result<Self> {
+        let backend = RelayBackend::new(url.as_ref())?;
+        backend.pin_server_id(expected_server_id);
         Ok(Self {
             backend: Arc::new(Backend::Relay(backend)),
         })
@@ -268,7 +292,7 @@ impl Database {
                 let user_id = claims
                     .get("sub")
                     .and_then(Value::as_str)
-                    .and_then(|s| s.parse::<i64>().ok());
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
                 let Some(id) = user_id else {
                     return Ok(None);
                 };
@@ -278,7 +302,7 @@ impl Database {
                 let token_ver = claims.get("ver").and_then(Value::as_i64).unwrap_or(0);
                 let current_ver: Option<i64> =
                     sqlx::query_scalar("SELECT token_version FROM users WHERE id = ?")
-                        .bind(id)
+                        .bind(id.to_string())
                         .fetch_optional(&local.pool)
                         .await?;
                 if current_ver != Some(token_ver) {
@@ -295,8 +319,20 @@ impl Database {
 
     /// Revoke every token previously issued to `user_id` by bumping the user's
     /// `token_version`; see [`UserManager::revoke_tokens`].
-    pub async fn revoke_tokens(&self, user_id: i64) -> Result<bool> {
+    pub async fn revoke_tokens(&self, user_id: uuid::Uuid) -> Result<bool> {
         self.users().revoke_tokens(user_id, None).await
+    }
+
+    /// このデータベースの発行元サーバー識別子 (server_id) を返す。
+    ///
+    /// - local: `meta` テーブルに永続化された UUID(初回オープン時に生成)。
+    /// - relay: サーバーの `GET /server-info` から取得し、以後の応答と照合する
+    ///   ために pin する。既に pin 済みなら追加リクエストなしでその値を返す。
+    pub async fn server_id(&self) -> Result<String> {
+        match &*self.backend {
+            Backend::Local(local) => Ok(local.server_id.clone()),
+            Backend::Relay(relay) => relay.fetch_server_id().await,
+        }
     }
 
     /// Ensure an admin user exists (local backend only).
@@ -318,7 +354,7 @@ impl Database {
         };
 
         let admin_exists: Option<(i64,)> = sqlx::query_as(
-            "SELECT ug.user_id FROM user_groups ug \
+            "SELECT 1 FROM user_groups ug \
              JOIN groups g ON ug.group_id = g.id \
              WHERE g.is_admin = 1 LIMIT 1",
         )
@@ -338,7 +374,12 @@ impl Database {
     }
 }
 
-async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+async fn run_migrations(pool: &SqlitePool, db_path: &Path) -> Result<()> {
+    // 0005: users.id を INTEGER 連番から UUID (TEXT) へ移行する。0001 の
+    // CREATE TABLE IF NOT EXISTS より先に判定しないと、旧スキーマが残ったまま
+    // 素通りしてしまうため最初に実行する。
+    migrate_users_to_uuid(pool, db_path).await?;
+
     // 0001_init creates tables (with `is_admin` column on `groups`) idempotently.
     // For databases predating `is_admin`, we ALTER TABLE if the column is missing.
     sqlx::query(include_str!("../migrations/0001_init.sql"))
@@ -381,6 +422,172 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `users.id` が旧スキーマ (INTEGER 連番) の場合、全ユーザーに UUID v7 を
+/// 割り当ててテーブルを再構築し、`user_groups.user_id` の参照も引き継ぐ。
+/// 実行前に DB ファイルを `<db>.pre-uuid.bak` へバックアップする。
+async fn migrate_users_to_uuid(pool: &SqlitePool, db_path: &Path) -> Result<()> {
+    let columns = sqlx::query("PRAGMA table_info(users)").fetch_all(pool).await?;
+    if columns.is_empty() {
+        // users テーブルがまだ無い(新規 DB)。0001 が TEXT id で作成する。
+        return Ok(());
+    }
+    let id_is_integer = columns.iter().any(|r| {
+        r.try_get::<String, _>("name").map(|n| n == "id").unwrap_or(false)
+            && r.try_get::<String, _>("type")
+                .map(|t| t.eq_ignore_ascii_case("INTEGER"))
+                .unwrap_or(false)
+    });
+    if !id_is_integer {
+        return Ok(());
+    }
+    let has_token_version = columns.iter().any(|r| {
+        r.try_get::<String, _>("name")
+            .map(|n| n == "token_version")
+            .unwrap_or(false)
+    });
+
+    // 再構築前にファイルごとバックアップ(WAL の内容も含めるため VACUUM INTO)。
+    let backup = db_path.with_extension("db.pre-uuid.bak");
+    let _ = std::fs::remove_file(&backup);
+    sqlx::query("VACUUM INTO ?")
+        .bind(backup.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
+    tracing_backup_note(&backup);
+
+    // 外部キー制約の一時無効化はトランザクション外でのみ有効なため、
+    // 単一コネクション上で OFF → 再構築 → ON の順に実行する。
+    let mut conn = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+
+    let result: Result<()> = async {
+        sqlx::query("BEGIN").execute(&mut *conn).await?;
+
+        // 旧 id → 新 UUID の対応表。
+        sqlx::query("CREATE TEMP TABLE id_map (old INTEGER PRIMARY KEY, new TEXT NOT NULL)")
+            .execute(&mut *conn)
+            .await?;
+        let old_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM users")
+            .fetch_all(&mut *conn)
+            .await?;
+        for old in old_ids {
+            sqlx::query("INSERT INTO id_map (old, new) VALUES (?, ?)")
+                .bind(old)
+                .bind(uuid::Uuid::now_v7().to_string())
+                .execute(&mut *conn)
+                .await?;
+        }
+
+        sqlx::query(
+            "CREATE TABLE users_new (
+                id TEXT PRIMARY KEY NOT NULL,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                token_version INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
+        let token_version_expr = if has_token_version { "u.token_version" } else { "0" };
+        sqlx::query(&format!(
+            "INSERT INTO users_new \
+             SELECT m.new, u.username, u.password_hash, u.display_name, u.is_active, \
+                    {token_version_expr}, u.created_at, u.updated_at \
+             FROM users u JOIN id_map m ON u.id = m.old",
+        ))
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE user_groups_new (
+                user_id TEXT NOT NULL,
+                group_id INTEGER NOT NULL,
+                joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, group_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "INSERT INTO user_groups_new \
+             SELECT m.new, ug.group_id, ug.joined_at \
+             FROM user_groups ug JOIN id_map m ON ug.user_id = m.old",
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query("DROP TABLE user_groups").execute(&mut *conn).await?;
+        sqlx::query("DROP TABLE users").execute(&mut *conn).await?;
+        sqlx::query("ALTER TABLE users_new RENAME TO users")
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("ALTER TABLE user_groups_new RENAME TO user_groups")
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DROP TABLE id_map").execute(&mut *conn).await?;
+
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
+        Ok(())
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+    }
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut *conn)
+        .await?;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await?;
+    result?;
+    if !violations.is_empty() {
+        return Err(Error::InvalidArgument(format!(
+            "uuid migration left dangling foreign keys (backup kept at {})",
+            backup.display()
+        )));
+    }
+    Ok(())
+}
+
+fn tracing_backup_note(backup: &Path) {
+    // tracing 依存を core に増やさず、標準エラーへ一度だけ知らせる。
+    eprintln!(
+        "user-permission: users.id を UUID へ移行します(バックアップ: {})",
+        backup.display()
+    );
+}
+
+/// `meta` テーブルから server_id を読み出し、無ければ UUID v7 を生成して永続化する。
+async fn load_or_create_server_id(pool: &SqlitePool) -> Result<String> {
+    if let Some(id) =
+        sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = 'server_id'")
+            .fetch_optional(pool)
+            .await?
+    {
+        return Ok(id);
+    }
+    let id = uuid::Uuid::now_v7().to_string();
+    // 競合時 (別コネクションが先に生成) は既存値を採用する。
+    sqlx::query("INSERT OR IGNORE INTO meta (key, value) VALUES ('server_id', ?)")
+        .bind(&id)
+        .execute(pool)
+        .await?;
+    sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = 'server_id'")
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into)
 }
 
 impl Backend {

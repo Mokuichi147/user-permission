@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::Row;
+use uuid::Uuid;
 
 use crate::database::Backend;
 use crate::error::{Error, Result};
@@ -12,7 +13,7 @@ use crate::password::{hash, verify};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
-    pub id: i64,
+    pub id: Uuid,
     pub username: String,
     pub display_name: String,
     pub is_active: bool,
@@ -21,9 +22,11 @@ pub struct User {
 }
 
 impl User {
-    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self> {
+    pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self> {
+        let id: String = row.try_get("id")?;
         Ok(Self {
-            id: row.try_get("id")?,
+            id: Uuid::parse_str(&id)
+                .map_err(|e| Error::InvalidArgument(format!("invalid user id in database: {e}")))?,
             username: row.try_get("username")?,
             display_name: row.try_get("display_name")?,
             is_active: row.try_get::<i64, _>("is_active")? != 0,
@@ -87,8 +90,9 @@ impl UserManager {
                 let is_first = count == 0;
 
                 let row = sqlx::query(
-                    "INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?) RETURNING *",
+                    "INSERT INTO users (id, username, password_hash, display_name) VALUES (?, ?, ?, ?) RETURNING *",
                 )
+                .bind(Uuid::now_v7().to_string())
                 .bind(username)
                 .bind(&hashed)
                 .bind(display_name)
@@ -124,7 +128,7 @@ impl UserManager {
                     sqlx::query(
                         "INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)",
                     )
-                    .bind(user.id)
+                    .bind(user.id.to_string())
                     .bind(admin_group_id)
                     .execute(&mut *tx)
                     .await?;
@@ -148,12 +152,12 @@ impl UserManager {
         }
     }
 
-    pub async fn get_by_id(&self, user_id: i64, token: Option<&str>) -> Result<Option<User>> {
+    pub async fn get_by_id(&self, user_id: Uuid, token: Option<&str>) -> Result<Option<User>> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
                 let row = sqlx::query("SELECT * FROM users WHERE id = ?")
-                    .bind(user_id)
+                    .bind(user_id.to_string())
                     .fetch_optional(&local.pool)
                     .await?;
                 row.as_ref().map(User::from_row).transpose()
@@ -219,7 +223,7 @@ impl UserManager {
 
     pub async fn update(
         &self,
-        user_id: i64,
+        user_id: Uuid,
         update: UserUpdate,
         token: Option<&str>,
     ) -> Result<Option<User>> {
@@ -267,7 +271,7 @@ impl UserManager {
                         _ => q,
                     };
                 }
-                q = q.bind(user_id);
+                q = q.bind(user_id.to_string());
                 q.execute(pool).await.map_err(map_unique_error)?;
                 self.get_by_id(user_id, token).await
             }
@@ -298,12 +302,12 @@ impl UserManager {
         }
     }
 
-    pub async fn delete(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
+    pub async fn delete(&self, user_id: Uuid, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
                 let res = sqlx::query("DELETE FROM users WHERE id = ?")
-                    .bind(user_id)
+                    .bind(user_id.to_string())
                     .execute(&local.pool)
                     .await?;
                 Ok(res.rows_affected() > 0)
@@ -326,7 +330,7 @@ impl UserManager {
     /// `token_version`. Outstanding JWTs carry the old version in their `ver`
     /// claim and are rejected on the next verification. Returns `false` if the
     /// user does not exist.
-    pub async fn revoke_tokens(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
+    pub async fn revoke_tokens(&self, user_id: Uuid, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
@@ -334,7 +338,7 @@ impl UserManager {
                     "UPDATE users SET token_version = token_version + 1, \
                      updated_at = datetime('now') WHERE id = ?",
                 )
-                .bind(user_id)
+                .bind(user_id.to_string())
                 .execute(&local.pool)
                 .await?;
                 Ok(res.rows_affected() > 0)
@@ -353,7 +357,7 @@ impl UserManager {
         }
     }
 
-    pub async fn is_admin(&self, user_id: i64, token: Option<&str>) -> Result<bool> {
+    pub async fn is_admin(&self, user_id: Uuid, token: Option<&str>) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
@@ -363,7 +367,7 @@ impl UserManager {
                      WHERE ug.user_id = ? AND g.is_admin = 1 \
                      LIMIT 1",
                 )
-                .bind(user_id)
+                .bind(user_id.to_string())
                 .fetch_optional(&local.pool)
                 .await?;
                 Ok(row.is_some())
@@ -384,7 +388,7 @@ impl UserManager {
     /// Promote or demote a user by joining/leaving an admin group.
     pub async fn set_admin(
         &self,
-        user_id: i64,
+        user_id: Uuid,
         is_admin: bool,
         token: Option<&str>,
     ) -> Result<bool> {
@@ -423,7 +427,7 @@ impl UserManager {
                 }
             };
             sqlx::query("INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)")
-                .bind(user_id)
+                .bind(user_id.to_string())
                 .bind(group_id)
                 .execute(&mut *tx)
                 .await?;
@@ -433,7 +437,7 @@ impl UserManager {
                  WHERE user_id = ? \
                    AND group_id IN (SELECT id FROM groups WHERE is_admin = 1)",
             )
-            .bind(user_id)
+            .bind(user_id.to_string())
             .execute(&mut *tx)
             .await?;
         }
@@ -448,7 +452,7 @@ impl UserManager {
     /// rare enough that the extra round-trips are acceptable.
     async fn set_admin_relay(
         &self,
-        user_id: i64,
+        user_id: Uuid,
         is_admin: bool,
         token: Option<&str>,
     ) -> Result<bool> {

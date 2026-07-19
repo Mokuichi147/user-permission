@@ -6,6 +6,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use user_permission_core::{GroupUpdate, Principal, User, UserUpdate};
+use uuid::Uuid;
 
 use crate::auth::{AdminUser, AuthUser, GroupsRead, UsersRead};
 use crate::error::ApiError;
@@ -32,11 +33,14 @@ pub struct TokenForm {
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: &'static str,
+    /// 発行元サーバーの識別子。クライアントはこれを保存し、リレー先を
+    /// 切り替えた際に別サーバーへ誤接続していないか検証できる。
+    pub server_id: String,
 }
 
 #[derive(Serialize)]
 pub struct UserResponse {
-    pub id: i64,
+    pub id: Uuid,
     pub username: String,
     pub display_name: String,
     pub is_active: bool,
@@ -130,7 +134,7 @@ pub struct GroupPatch {
 #[derive(Deserialize)]
 pub struct GroupMember {
     pub group_id: i64,
-    pub user_id: i64,
+    pub user_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -182,6 +186,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/token", post(login))
         .route("/introspect", post(introspect))
+        .route("/server-info", get(server_info))
         .route("/me", get(me))
         .route("/users", post(create_user).get(list_users))
         .route(
@@ -287,18 +292,40 @@ async fn login(
             ));
         }
     };
+    let server_id = state.db.server_id().await?;
     Ok(Json(TokenResponse {
         access_token: token,
         token_type: "bearer",
+        server_id,
     }))
+}
+
+#[derive(Serialize)]
+pub struct ServerInfo {
+    pub server_id: String,
+}
+
+/// このサーバーインスタンスの識別子を返す。認証不要。クライアントは接続先の
+/// すり替わり検出のためにこの値を pin できる。
+async fn server_info(State(state): State<Arc<AppState>>) -> Result<Json<ServerInfo>, ApiError> {
+    let server_id = state.db.server_id().await?;
+    Ok(Json(ServerInfo { server_id }))
+}
+
+#[derive(Serialize)]
+pub struct IntrospectResponse {
+    pub server_id: String,
+    pub principal: Principal,
 }
 
 /// Resolve the bearer token to its [`Principal`] (user or service client).
 /// Used by relay backends to delegate token classification to this server.
+/// 応答には発行元の `server_id` を含み、リレークライアントが接続先の
+/// すり替わりを検出できるようにする。
 async fn introspect(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Principal>, ApiError> {
+) -> Result<Json<IntrospectResponse>, ApiError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -310,7 +337,11 @@ async fn introspect(
         .resolve_principal(token)
         .await?
         .ok_or_else(|| ApiError::unauthorized("invalid or expired token"))?;
-    Ok(Json(principal))
+    let server_id = state.db.server_id().await?;
+    Ok(Json(IntrospectResponse {
+        server_id,
+        principal,
+    }))
 }
 
 /// ディレクトリ読み取りの閲覧範囲。サービストークン（スコープは抽出側で検証
@@ -404,7 +435,7 @@ async fn list_users(
 
 async fn get_user(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     UsersRead(principal): UsersRead,
 ) -> Result<Json<UserResponse>, ApiError> {
     if let ReadAccess::SelfOnly(me) = read_access(&state, principal).await? {
@@ -424,7 +455,7 @@ async fn get_user(
 
 async fn update_user(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     AuthUser(current): AuthUser,
     Json(body): Json<UserPatch>,
 ) -> Result<Json<UserResponse>, ApiError> {
@@ -463,7 +494,7 @@ async fn update_user(
 
 async fn delete_user(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     AuthUser(current): AuthUser,
 ) -> Result<StatusCode, ApiError> {
     let caller_is_admin = state.db.users().is_admin(current.id, None).await?;
@@ -484,7 +515,7 @@ async fn delete_user(
 /// targeting themselves.
 async fn revoke_tokens(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     AuthUser(current): AuthUser,
 ) -> Result<StatusCode, ApiError> {
     let caller_is_admin = state.db.users().is_admin(current.id, None).await?;
@@ -502,7 +533,7 @@ async fn revoke_tokens(
 
 async fn list_user_groups(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     UsersRead(principal): UsersRead,
 ) -> Result<Json<Vec<GroupResponse>>, ApiError> {
     if let ReadAccess::SelfOnly(me) = read_access(&state, principal).await? {
@@ -640,7 +671,7 @@ async fn add_member(
 
 async fn remove_member(
     State(state): State<Arc<AppState>>,
-    Path((group_id, user_id)): Path<(i64, i64)>,
+    Path((group_id, user_id)): Path<(i64, Uuid)>,
     AdminUser(_): AdminUser,
 ) -> Result<StatusCode, ApiError> {
     if !state

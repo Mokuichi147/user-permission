@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::Row;
+use uuid::Uuid;
 
 use crate::database::Backend;
 use crate::error::{Error, Result};
@@ -278,12 +279,17 @@ impl GroupManager {
         }
     }
 
-    pub async fn add_user(&self, group_id: i64, user_id: i64, token: Option<&str>) -> Result<bool> {
+    pub async fn add_user(
+        &self,
+        group_id: i64,
+        user_id: Uuid,
+        token: Option<&str>,
+    ) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
                 let res = sqlx::query("INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)")
-                    .bind(user_id)
+                    .bind(user_id.to_string())
                     .bind(group_id)
                     .execute(&local.pool)
                     .await;
@@ -308,14 +314,14 @@ impl GroupManager {
     pub async fn remove_user(
         &self,
         group_id: i64,
-        user_id: i64,
+        user_id: Uuid,
         token: Option<&str>,
     ) -> Result<bool> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
                 let res = sqlx::query("DELETE FROM user_groups WHERE user_id = ? AND group_id = ?")
-                    .bind(user_id)
+                    .bind(user_id.to_string())
                     .bind(group_id)
                     .execute(&local.pool)
                     .await?;
@@ -348,18 +354,7 @@ impl GroupManager {
                 .bind(group_id)
                 .fetch_all(&local.pool)
                 .await?;
-                rows.iter()
-                    .map(|row| {
-                        Ok::<User, Error>(User {
-                            id: row.try_get("id")?,
-                            username: row.try_get("username")?,
-                            display_name: row.try_get("display_name")?,
-                            is_active: row.try_get::<i64, _>("is_active")? != 0,
-                            created_at: row.try_get("created_at")?,
-                            updated_at: row.try_get("updated_at")?,
-                        })
-                    })
-                    .collect()
+                rows.iter().map(User::from_row).collect()
             }
             Backend::Relay(relay) => {
                 let bearer = relay.resolve_auth(token);
@@ -375,7 +370,7 @@ impl GroupManager {
         }
     }
 
-    pub async fn get_user_groups(&self, user_id: i64, token: Option<&str>) -> Result<Vec<Group>> {
+    pub async fn get_user_groups(&self, user_id: Uuid, token: Option<&str>) -> Result<Vec<Group>> {
         match &*self.backend {
             Backend::Local(local) => {
                 local.verify_if_present(token)?;
@@ -385,7 +380,7 @@ impl GroupManager {
                      WHERE ug.user_id = ? \
                      ORDER BY g.id",
                 )
-                .bind(user_id)
+                .bind(user_id.to_string())
                 .fetch_all(&local.pool)
                 .await?;
                 rows.iter().map(Group::from_row).collect()

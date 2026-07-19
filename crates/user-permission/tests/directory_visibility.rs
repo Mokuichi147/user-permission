@@ -4,7 +4,7 @@ use user_permission_core::Database;
 
 /// admin（管理者）/ bob・carol（一般）と、bob だけが所属する editors
 /// グループを持つサーバーを起動する。
-async fn spawn_server() -> (String, i64, i64, i64, tempfile::TempDir) {
+async fn spawn_server() -> (String, uuid::Uuid, uuid::Uuid, i64, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open_local(dir.path().join("test.db"), Some(dir.path().join("secret.key")))
         .await
@@ -63,7 +63,7 @@ async fn non_admin_sees_only_self_in_user_list() {
     assert_eq!(status, 200);
     let users = body.as_array().unwrap();
     assert_eq!(users.len(), 1);
-    assert_eq!(users[0]["id"].as_i64(), Some(bob_id));
+    assert_eq!(users[0]["id"].as_str(), Some(bob_id.to_string().as_str()));
 
     // ユーザー名検索でも他人は見えない
     let (status, body) = get_json(&client, &format!("{base}/users?username=admin"), &bob).await;

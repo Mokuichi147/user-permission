@@ -13,6 +13,12 @@ pub(crate) struct RelayBackend {
     /// Stored client-credentials, set by `login_client_credentials`, used to
     /// transparently re-issue the access token when a request gets a 401.
     client_creds: RwLock<Option<(String, String)>>,
+    /// 接続先サーバーの識別子 (server_id) の pin。初回応答で TOFU 記録するか、
+    /// `Database::open_relay_pinned` で明示設定する。以後の応答と不一致なら
+    /// 内部トークン・資格情報を破棄して `Error::RelayServerMismatch` を返し、
+    /// 「リレー先を切り替えたら別サーバーの同じユーザー ID にログインできて
+    /// しまう」事故を防ぐ。
+    server_id: RwLock<Option<String>>,
 }
 
 impl RelayBackend {
@@ -25,7 +31,67 @@ impl RelayBackend {
             base_url,
             token: RwLock::new(None),
             client_creds: RwLock::new(None),
+            server_id: RwLock::new(None),
         })
+    }
+
+    pub(crate) fn pin_server_id(&self, server_id: &str) {
+        *self
+            .server_id
+            .write()
+            .expect("relay server_id lock poisoned") = Some(server_id.to_string());
+    }
+
+    pub(crate) fn pinned_server_id(&self) -> Option<String> {
+        self.server_id.read().ok().and_then(|g| g.clone())
+    }
+
+    /// サーバー応答に含まれる server_id を pin と照合する。未 pin なら記録
+    /// (TOFU)、不一致なら保持しているトークン・資格情報を破棄してエラー。
+    fn check_server_id(&self, actual: &str) -> Result<()> {
+        let mut guard = self
+            .server_id
+            .write()
+            .expect("relay server_id lock poisoned");
+        match guard.as_deref() {
+            Some(expected) if expected != actual => {
+                let expected = expected.to_string();
+                drop(guard);
+                self.set_token(None);
+                *self
+                    .client_creds
+                    .write()
+                    .expect("relay creds lock poisoned") = None;
+                Err(Error::RelayServerMismatch {
+                    expected,
+                    actual: actual.to_string(),
+                })
+            }
+            Some(_) => Ok(()),
+            None => {
+                *guard = Some(actual.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /// pin 済みの server_id を返す。未取得なら `GET /server-info` で取得して
+    /// pin する。
+    pub(crate) async fn fetch_server_id(&self) -> Result<String> {
+        if let Some(id) = self.pinned_server_id() {
+            return Ok(id);
+        }
+        let body: Value = self.request_json("GET", "/server-info", None, None).await?;
+        let id = body
+            .get("server_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Relay {
+                status: 200,
+                body: "no server_id in /server-info response".into(),
+            })?
+            .to_string();
+        self.check_server_id(&id)?;
+        Ok(id)
     }
 
     pub(crate) fn set_token(&self, token: Option<String>) {
@@ -73,6 +139,11 @@ impl RelayBackend {
                 body: "no access_token in response".into(),
             })?
             .to_string();
+        // トークンを保存する前に発行元サーバーを検証する。不一致なら
+        // このトークンは別サーバーのものなので破棄される。
+        if let Some(server_id) = body.get("server_id").and_then(Value::as_str) {
+            self.check_server_id(server_id)?;
+        }
         self.set_token(Some(token.clone()));
         Ok(token)
     }
@@ -112,6 +183,9 @@ impl RelayBackend {
             return Err(Error::Relay { status, body });
         }
         let body: Value = resp.json().await?;
+        if let Some(server_id) = body.get("server_id").and_then(Value::as_str) {
+            self.check_server_id(server_id)?;
+        }
         body.get("access_token")
             .and_then(Value::as_str)
             .map(str::to_string)
@@ -155,7 +229,23 @@ impl RelayBackend {
             let body = resp.text().await.unwrap_or_default();
             return Err(Error::Relay { status, body });
         }
-        Ok(Some(resp.json().await?))
+        let body: Value = resp.json().await?;
+        // 応答は `{ "server_id": ..., "principal": {...} }`。サーバーの
+        // すり替わりは設定ミスとして明示的にエラーにする(黙って 401 相当の
+        // `Ok(None)` にはしない)。
+        if let Some(server_id) = body.get("server_id").and_then(Value::as_str) {
+            self.check_server_id(server_id)?;
+        }
+        let principal = body.get("principal").cloned().ok_or_else(|| Error::Relay {
+            status: 200,
+            body: "no principal in /introspect response".into(),
+        })?;
+        Ok(Some(serde_json::from_value(principal).map_err(|e| {
+            Error::Relay {
+                status: 200,
+                body: format!("invalid principal in /introspect response: {e}"),
+            }
+        })?))
     }
 
     /// Like `request_json` but returns `Ok(None)` on 404.

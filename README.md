@@ -101,6 +101,35 @@ let _token = db.login("alice", "s3cret-pass", std::time::Duration::from_secs(360
 
 backend が確定している場合は `Database::open_local()` / `Database::open_relay()` も使えます。
 
+### ユーザー ID と server_id
+
+ユーザー ID は **UUID v7**(`uuid::Uuid`)です。API・JWT の `sub`・DB 上のすべてで
+文字列表現(ハイフン付き36文字)を使います。
+
+各サーバー(=各データベース)は初回起動時に固有の **server_id**(UUID)を生成して
+`meta` テーブルに永続化し、発行する JWT の `iss` クレームに埋め込みます。検証時は
+`iss` の一致が必須のため、同じ署名鍵を使い回した別サーバーのトークンでも拒否されます。
+server_id は認証不要の `GET /server-info` と `POST /token` のレスポンスで取得できます。
+
+リレークライアントは初回応答の server_id を pin し、以後の応答と不一致なら内部トークンを
+破棄して `Error::RelayServerMismatch` を返します。接続先の切り替え・すり替わりを確実に
+検出したい場合は、取得済みの server_id を永続化して `Database::open_relay_pinned()` に
+渡してください。
+
+```rust,ignore
+let db = Database::open_relay("http://central:8001")?;
+let server_id = db.server_id().await?; // 永続化しておく
+
+// 次回以降: 別サーバーにすり替わっていればログイン時点でエラーになる
+let db = Database::open_relay_pinned("http://central:8001", &server_id)?;
+```
+
+**旧バージョン(連番 i64 の id)からの移行**: 既存 DB は起動時に自動でテーブルを再構築し、
+全ユーザーへ UUID を割り当てます(グループ所属も引き継がれます)。実行前に
+`<db>.pre-uuid.bak` へバックアップが作成されます。旧形式の JWT(数値 sub・`iss` なし)は
+すべて無効になるため、全ユーザーの再ログインが必要です。旧クライアントと新サーバーの
+混在は動作しません。
+
 ### トークンの失効
 
 発行済みトークンはユーザーごとの `token_version` 方式で失効できます。JWT には発行時点の
@@ -162,8 +191,9 @@ user-permission serve --password-min-len 12
 
 | メソッド | パス | 説明 | 認証 |
 |---|---|---|---|
-| POST | `/token` | ログイン（`password` / `client_credentials` grant） | 不要 |
-| POST | `/introspect` | トークンを principal（ユーザー / サービス）に解決 | 必要 |
+| POST | `/token` | ログイン（`password` / `client_credentials` grant）。`server_id` を含む | 不要 |
+| POST | `/introspect` | トークンを principal（ユーザー / サービス）に解決。`{server_id, principal}` を返す | 必要 |
+| GET | `/server-info` | サーバー識別子（`server_id`）を返す | 不要 |
 | GET | `/me` | 現在のユーザー情報（`is_admin` を含む） | 必要 |
 | POST | `/users` | ユーザー作成 | 不要 |
 | GET | `/users` | ユーザー一覧（`?username=...` で username 完全一致検索） | 必要※ |

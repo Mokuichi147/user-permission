@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY NOT NULL,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     display_name TEXT NOT NULL DEFAULT '',
@@ -18,8 +18,14 @@ CREATE TABLE IF NOT EXISTS groups (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- サーバーインスタンスの識別子などを保持するキーバリューストア。
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_groups (
-    user_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
     group_id INTEGER NOT NULL,
     joined_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, group_id),

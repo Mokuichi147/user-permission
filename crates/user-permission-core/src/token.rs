@@ -39,6 +39,10 @@ pub fn load_or_create_secret(path: impl AsRef<Path>) -> Result<String> {
 pub struct TokenManager {
     secret: String,
     algorithm: Algorithm,
+    /// 発行元サーバーの識別子。`Some` の場合、発行するトークンに `iss`
+    /// クレームとして付与し、検証時にも一致を要求する。これにより同じ
+    /// 署名鍵を使い回した別サーバーのトークンを拒否できる。
+    issuer: Option<String>,
 }
 
 impl TokenManager {
@@ -46,6 +50,7 @@ impl TokenManager {
         Self {
             secret: secret.into(),
             algorithm,
+            issuer: None,
         }
     }
 
@@ -53,9 +58,15 @@ impl TokenManager {
         Ok(Self::new(load_or_create_secret(path)?, algorithm))
     }
 
+    /// 発行元サーバー識別子 (server_id) を設定する。
+    pub fn with_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.issuer = Some(issuer.into());
+        self
+    }
+
     pub fn create_token(
         &self,
-        user_id: i64,
+        user_id: uuid::Uuid,
         username: &str,
         expires_in: Duration,
         extra_claims: Option<&Map<String, Value>>,
@@ -68,6 +79,9 @@ impl TokenManager {
         payload.insert("username".into(), Value::String(username.to_string()));
         payload.insert("iat".into(), Value::Number(now.into()));
         payload.insert("exp".into(), Value::Number(exp.into()));
+        if let Some(iss) = &self.issuer {
+            payload.insert("iss".into(), Value::String(iss.clone()));
+        }
 
         if let Some(extra) = extra_claims {
             for (k, v) in extra {
@@ -104,6 +118,9 @@ impl TokenManager {
         payload.insert("scope".into(), Value::String(scopes.join(" ")));
         payload.insert("iat".into(), Value::Number(now.into()));
         payload.insert("exp".into(), Value::Number(exp.into()));
+        if let Some(iss) = &self.issuer {
+            payload.insert("iss".into(), Value::String(iss.clone()));
+        }
 
         let token = encode(
             &Header::new(self.algorithm),
@@ -118,6 +135,11 @@ impl TokenManager {
         let mut validation = Validation::new(self.algorithm);
         validation.required_spec_claims.clear();
         validation.required_spec_claims.insert("exp".to_string());
+        if let Some(iss) = &self.issuer {
+            // 発行元不一致(別サーバーで発行されたトークン)は署名が正しくても拒否する。
+            validation.required_spec_claims.insert("iss".to_string());
+            validation.set_issuer(&[iss]);
+        }
 
         let data = decode::<Value>(
             token,
@@ -141,11 +163,12 @@ mod tests {
     #[test]
     fn create_and_verify_round_trip() {
         let mgr = TokenManager::new("test-secret", Algorithm::HS256);
+        let id = uuid::Uuid::now_v7();
         let token = mgr
-            .create_token(42, "alice", Duration::from_secs(60), None)
+            .create_token(id, "alice", Duration::from_secs(60), None)
             .unwrap();
         let claims = mgr.verify_token(&token).unwrap();
-        assert_eq!(claims["sub"], Value::String("42".into()));
+        assert_eq!(claims["sub"], Value::String(id.to_string()));
         assert_eq!(claims["username"], Value::String("alice".into()));
     }
 
@@ -155,10 +178,42 @@ mod tests {
         let mut extra = Map::new();
         extra.insert("is_admin".into(), Value::Bool(true));
         let token = mgr
-            .create_token(1, "alice", Duration::from_secs(60), Some(&extra))
+            .create_token(uuid::Uuid::now_v7(), "alice", Duration::from_secs(60), Some(&extra))
             .unwrap();
         let claims = mgr.verify_token(&token).unwrap();
         assert_eq!(claims["is_admin"], Value::Bool(true));
+    }
+
+    #[test]
+    fn issuer_included_and_required() {
+        let mgr = TokenManager::new("k", Algorithm::HS256).with_issuer("server-a");
+        let token = mgr
+            .create_token(uuid::Uuid::now_v7(), "alice", Duration::from_secs(60), None)
+            .unwrap();
+        let claims = mgr.verify_token(&token).unwrap();
+        assert_eq!(claims["iss"], Value::String("server-a".into()));
+    }
+
+    #[test]
+    fn issuer_mismatch_rejected() {
+        // 同じ署名鍵でも issuer (server_id) が異なるサーバーのトークンは拒否される。
+        let a = TokenManager::new("shared-secret", Algorithm::HS256).with_issuer("server-a");
+        let b = TokenManager::new("shared-secret", Algorithm::HS256).with_issuer("server-b");
+        let token = a
+            .create_token(uuid::Uuid::now_v7(), "alice", Duration::from_secs(60), None)
+            .unwrap();
+        assert!(b.verify_token(&token).is_err());
+    }
+
+    #[test]
+    fn token_without_issuer_rejected_by_issuer_aware_manager() {
+        // iss を持たない旧形式トークンは、issuer 設定済みのマネージャで拒否される。
+        let legacy = TokenManager::new("shared-secret", Algorithm::HS256);
+        let strict = TokenManager::new("shared-secret", Algorithm::HS256).with_issuer("server-a");
+        let token = legacy
+            .create_token(uuid::Uuid::now_v7(), "alice", Duration::from_secs(60), None)
+            .unwrap();
+        assert!(strict.verify_token(&token).is_err());
     }
 
     #[test]

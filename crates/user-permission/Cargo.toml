@@ -33,6 +33,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 
 # Binary-only deps. Library users pay the compile-time cost, but no runtime
 # overhead. If this ever becomes a concern, gate behind a `cli` feature and
@@ -45,3 +46,4 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
 reqwest = { workspace = true }
+uuid = { workspace = true }

@@ -14,6 +14,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use serde::Deserialize;
 use user_permission_core::{Group, GroupUpdate, User, UserUpdate};
+use uuid::Uuid;
 
 use crate::state::AppState;
 
@@ -27,7 +28,7 @@ const HX_REDIRECT: HeaderName = HeaderName::from_static("hx-redirect");
 
 #[derive(Clone)]
 pub struct UserView {
-    pub id: i64,
+    pub id: Uuid,
     pub username: String,
     pub display_name: String,
     pub is_active: bool,
@@ -92,7 +93,7 @@ struct UsersTemplate<'a> {
     user: Option<&'a UserView>,
     is_admin: bool,
     users: &'a [UserView],
-    current_user_id: i64,
+    current_user_id: Uuid,
 }
 
 #[derive(Template)]
@@ -100,7 +101,7 @@ struct UsersTemplate<'a> {
 struct UserRowTemplate<'a> {
     prefix: &'a str,
     u: &'a UserView,
-    current_user_id: i64,
+    current_user_id: Uuid,
     is_admin: bool,
 }
 
@@ -787,7 +788,7 @@ async fn users_create(
 
 async fn users_delete(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
     let prefix = prefix(&state).to_string();
@@ -826,7 +827,7 @@ async fn users_delete(
 
 async fn users_toggle_active(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
     let prefix = prefix(&state).to_string();
@@ -868,7 +869,7 @@ async fn users_toggle_active(
 
 async fn users_toggle_admin(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
     let prefix = prefix(&state).to_string();
@@ -912,7 +913,7 @@ async fn users_toggle_admin(
 
 async fn users_edit_page(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
     let prefix = prefix(&state).to_string();
@@ -962,7 +963,7 @@ struct UserEditForm {
 
 async fn users_edit_submit(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     headers: HeaderMap,
     Form(form): Form<UserEditForm>,
 ) -> Response {
@@ -1064,7 +1065,7 @@ struct UserResetPasswordForm {
 
 async fn users_reset_password(
     State(state): State<Arc<AppState>>,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
     headers: HeaderMap,
     Form(form): Form<UserResetPasswordForm>,
 ) -> Response {
@@ -1233,7 +1234,7 @@ async fn group_detail(
         .await
         .unwrap_or_default();
     let non_members = if user.is_admin {
-        let member_ids: std::collections::HashSet<i64> = members.iter().map(|u| u.id).collect();
+        let member_ids: std::collections::HashSet<Uuid> = members.iter().map(|u| u.id).collect();
         state
             .db
             .users()
@@ -1311,7 +1312,7 @@ async fn group_update(
         .get_members(group_id, None)
         .await
         .unwrap_or_default();
-    let member_ids: std::collections::HashSet<i64> = members.iter().map(|u| u.id).collect();
+    let member_ids: std::collections::HashSet<Uuid> = members.iter().map(|u| u.id).collect();
     let non_members = state
         .db
         .users()
@@ -1354,7 +1355,7 @@ async fn group_delete(
 
 #[derive(Deserialize)]
 struct AddMemberForm {
-    user_id: i64,
+    user_id: Uuid,
 }
 
 async fn group_add_member(
@@ -1400,7 +1401,7 @@ async fn group_add_member(
 
 async fn group_remove_member(
     State(state): State<Arc<AppState>>,
-    Path((group_id, user_id)): Path<(i64, i64)>,
+    Path((group_id, user_id)): Path<(i64, Uuid)>,
     headers: HeaderMap,
 ) -> Response {
     let prefix = prefix(&state).to_string();

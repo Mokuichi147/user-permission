@@ -41,6 +41,9 @@ pub enum Error {
     #[error("relay returned status {status}: {body}")]
     Relay { status: u16, body: String },
 
+    #[error("relay server mismatch: expected server_id {expected}, got {actual}")]
+    RelayServerMismatch { expected: String, actual: String },
+
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 

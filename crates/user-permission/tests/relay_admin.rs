@@ -5,14 +5,14 @@ use user_permission_core::Database;
 
 /// Boot a real server (local backend) on an ephemeral port. The first user
 /// becomes admin. Returns the base URL, bob's id, and the temp dir.
-async fn spawn_server() -> (String, i64, tempfile::TempDir) {
+async fn spawn_server() -> (String, uuid::Uuid, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open_local(dir.path().join("test.db"), Some(dir.path().join("secret.key")))
         .await
         .expect("open db");
 
-    db.users().create("alice", "pw-123456", "Alice", None).await.unwrap();
-    db.users().set_admin(1, true, None).await.unwrap();
+    let alice = db.users().create("alice", "pw-123456", "Alice", None).await.unwrap();
+    db.users().set_admin(alice.id, true, None).await.unwrap();
     let bob = db.users().create("bob", "pw-123456", "Bob", None).await.unwrap();
 
     let app = build_app(db, WebConfig::default());
